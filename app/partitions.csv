@@ -1,0 +1,10 @@
+# esp-swd partition table, 4 MB flash (ESP32-S3-WROOM-1-N4).
+# Two OTA slots + otadata: firmware updates over the esp-swd protocol with automatic rollback (planned, M1).
+# "images": cache for target images and loaders (planned). esptool/idf.py flash over USB-Serial-JTAG always works.
+# Name,    Type, SubType, Offset,   Size
+nvs,       data, nvs,     0x9000,   0x6000
+otadata,   data, ota,     0xf000,   0x2000
+phy_init,  data, phy,     0x11000,  0x1000
+ota_0,     app,  ota_0,   0x20000,  0x180000
+ota_1,     app,  ota_1,   0x1A0000, 0x180000
+images,    data, undefined, 0x320000, 0xE0000

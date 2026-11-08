@@ -1,0 +1,16 @@
+add_library(swd_sim STATIC sim/swd_sim.c)
+target_include_directories(swd_sim PUBLIC sim)
+target_link_libraries(swd_sim PUBLIC esw)
+set_target_properties(swd_sim PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+
+foreach(t swd target loader channel proto dgpio)
+  add_executable(test_${t} test_${t}.c)
+  target_include_directories(test_${t} PRIVATE .)
+  target_link_libraries(test_${t} PRIVATE swd_sim esw)
+  if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_${t} PRIVATE -Wall -Wextra -Werror)
+  endif()
+  add_test(NAME ${t} COMMAND test_${t})
+endforeach()
+# the ESP32-S3 dedicated-GPIO sequencer is pure C: test it here against the simulator
+target_include_directories(test_dgpio PRIVATE ${CMAKE_SOURCE_DIR}/ports/esp32s3 ${CMAKE_SOURCE_DIR}/ports/esp32s3/include)

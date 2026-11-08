@@ -1,0 +1,198 @@
+(kicad_sch
+	(version 20260306)
+	(generator "eeschema")
+	(generator_version "10.0")
+	(uuid "1d76fbe8-6da9-422c-8d01-a90618c3ce04")
+	(paper "A4")
+	(lib_symbols)
+	(sheet
+		(at 30.48 101.6)
+		(size 60.96 40.64)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "34c02ed3-5f4f-4f8d-bdc1-86e529b48211")
+		(property "Sheetname" "Channel A"
+			(at 30.48 100.965 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "channel_a.kicad_sch"
+			(at 30.48 142.875 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "dual_swd_flasher"
+				(path "/1d76fbe8-6da9-422c-8d01-a90618c3ce04"
+					(page "4")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 30.48 30.48)
+		(size 60.96 40.64)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "3cd48d65-5dfc-40da-bcc1-0ee7c1322553")
+		(property "Sheetname" "Power"
+			(at 30.48 29.845 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "power.kicad_sch"
+			(at 30.48 71.755 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "dual_swd_flasher"
+				(path "/1d76fbe8-6da9-422c-8d01-a90618c3ce04"
+					(page "2")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 114.3 101.6)
+		(size 60.96 40.64)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "4ee4966f-0be0-4eb9-8304-32aa4047d09b")
+		(property "Sheetname" "Channel B"
+			(at 114.3 100.965 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "channel_b.kicad_sch"
+			(at 114.3 142.875 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "dual_swd_flasher"
+				(path "/1d76fbe8-6da9-422c-8d01-a90618c3ce04"
+					(page "5")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 114.3 30.48)
+		(size 60.96 40.64)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "72cfb2d7-8be5-4e41-a35f-ddc69196330a")
+		(property "Sheetname" "MCU"
+			(at 114.3 29.845 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "mcu.kicad_sch"
+			(at 114.3 71.755 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "dual_swd_flasher"
+				(path "/1d76fbe8-6da9-422c-8d01-a90618c3ce04"
+					(page "3")
+				)
+			)
+		)
+	)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)

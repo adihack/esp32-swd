@@ -1,0 +1,66 @@
+r5 board test, channel A: SWDIO=GPIO4 SWCLK=GPIO5 NRST_DRV=GPIO7 NRST_SENSE=GPIO15 VTREF_ADC=GPIO8 EN_SWD=GPIO9 EN_VTREF=GPIO10
+
+== Stage 0: board self-test (all switches open, DUT not involved)
+[PASS] 0.1  EN_VTREF, EN_SWD, EN_UART, NRST_DRV driven low (all switches open)
+[PASS] 0.2  VTref ADC pin 0.000 V with EN_VTREF open (pulled to 0 by R316)
+[PASS] 0.3  tool-side idle levels: SWDIO=1 SWCLK=0 SWO=1 NRST_SENSE=1 UART_RX=1
+[PASS] 0.4  nRESET driver: DRV=1 -> SENSE=0, DRV=0 -> SENSE=1 (Q301 works, switch open)
+[INFO] 0.5  pull-probe baseline (45k internal pull vs 100k external): SWCLK+pu=1 SWDIO+pd=0 NRST+pd=0 (expected 1 0 0)
+
+== Stage 1: DUT power via VTref (EN_VTREF closed)
+[PASS] 1.1  VTref 2.97 V (ADC pin 1.487 V): DUT powered
+[WARN] 1.2  DUT VDD 2.97 V < 3.3 V: tool highs are 0.33 V above DUT VDD (nRF52840 abs max VDD+0.3 V)
+              -> Acceptable for a short board test (33R + DRIVE_0 limit clamp current).
+              -> Production: run DUTs at 3.3 V or add VTref-tracking I/O (rev E topic).
+[INFO] 1.3  VTref noise: min 2.976 max 2.977 V
+
+== Stage 2: close EN_SWD, check the lines on the DUT side
+[PASS] 2.1  EN_SWD closed (interlock passed), VTref now 2.98 V (delta +0.003 V)
+[INFO] 2.2  idle levels with switch closed: SWDIO=1 SWCLK=0 SWO=1 NRST_SENSE=1
+[PASS] 2.3  SWCLK reaches the DUT: its internal pull-down is visible (1 -> 0)
+[PASS] 2.3  SWDIO reaches the DUT: its internal pull-up is visible (0 -> 1)
+[PASS] 2.3  nRESET reaches the DUT: its internal pull-up is visible (0 -> 1)
+
+== Stage 3: nRESET through to the DUT (the DK restarts once - watch its LEDs)
+[PASS] 3.1  nRESET asserted (SENSE=0), released, line high again after 71 us
+
+== Stage 4: SWD link (DPIDR)
+[PASS] 4.1  DPIDR 0x2BA01477 read with half-period 0 us (designer 0x23B, DPv1, partno 0xBA)
+[PASS] 4.2  DPIDR matches nRF52 (Cortex-M4 SW-DP 0x2BA01477)
+[INFO] 4.3  bit-bang SWCLK ~24346 Hz
+[PASS] 4.4  50/50 DPIDR re-reads clean
+
+== Stage 5: debug power-up, access ports
+[PASS] 5.1  CDBGPWRUPACK/CSYSPWRUPACK set, CTRL/STAT 0xF0000040
+[PASS] 5.2  AP0 IDR 0x24770011 (AHB-AP)
+[PASS] 5.2  AP1 IDR 0x02880000 (Nordic CTRL-AP)
+[PASS] 5.3  CTRL-AP APPROTECTSTATUS: debug access allowed
+
+== Stage 6: memory access through the AHB-AP
+[INFO] 6.1  AHB-AP CSW 0x23000042 (DeviceEn=1)
+[PASS] 6.2  CPUID 0x410FC241 (Cortex-M4 r0p1 = 0x410FC241)
+              CODEPAGESIZE       @0x10000010 = 4096
+              CODESIZE (pages)   @0x10000014 = 256
+              DEVICEID[0]        @0x10000060 = 0x22CACD6B
+              DEVICEID[1]        @0x10000064 = 0x9F54AEC6
+              DEVICEADDRTYPE     @0x100000A0 = 0xFFFFFFFF
+              DEVICEADDR[0]      @0x100000A4 = 0x047B9239
+              DEVICEADDR[1]      @0x100000A8 = 0x666AFB1A
+              INFO.PART          @0x10000100 = 0x00052840
+              INFO.VARIANT       @0x10000104 = 0x41414630 "AAF0"
+              INFO.PACKAGE       @0x10000108 = 0x00002004
+              INFO.RAM (KB)      @0x1000010C = 0x100 (256)
+              INFO.FLASH (KB)    @0x10000110 = 0x400 (1024)
+[PASS] 6.3  FICR INFO.PART 0x52840
+              UICR.PSELRESET[0]  @0x10001200 = 0x00000012
+              UICR.PSELRESET[1]  @0x10001204 = 0x00000012
+              UICR.APPROTECT     @0x10001208 = 0xFFFFFF5A
+              UICR.REGOUT0       @0x10001304 = 0xFFFFFFFF
+[INFO] 6.4  flash[0..7]: initial SP 0x20040000, reset vector 0x00000009
+[PASS] 6.5  core halted (DHCSR 0x03030003), PC=0x00000020, resumed (DHCSR 0x01010000)
+
+== Stage 7: disconnect (debug off, pin reset, open switches)
+[PASS] 7.1  debug power-down + pin reset done
+[PASS] 7.2  all switches open, VTref ADC pin 0.000 V
+
+RESULT channel A: PASS with warnings (22 pass, 1 warn, 0 fail)

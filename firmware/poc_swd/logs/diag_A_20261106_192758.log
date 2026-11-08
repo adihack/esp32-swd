@@ -1,0 +1,19 @@
+r5 board test, channel A: SWDIO=GPIO4 SWCLK=GPIO5 NRST_DRV=GPIO7 NRST_SENSE=GPIO15 VTREF_ADC=GPIO8 EN_SWD=GPIO9 EN_VTREF=GPIO10
+
+== Stage 0: board self-test (all switches open, DUT not involved)
+[PASS] 0.1  EN_VTREF, EN_SWD, EN_UART, NRST_DRV driven low (all switches open)
+[PASS] 0.2  VTref ADC pin 0.000 V with EN_VTREF open (pulled to 0 by R316)
+[PASS] 0.3  tool-side idle levels: SWDIO=1 SWCLK=0 SWO=1 NRST_SENSE=1 UART_RX=1
+[PASS] 0.4  nRESET driver: DRV=1 -> SENSE=0, DRV=0 -> SENSE=1 (Q301 works, switch open)
+[INFO] 0.5  pull-probe baseline (45k internal pull vs 100k external): SWCLK+pu=1 SWDIO+pd=0 NRST+pd=0 (expected 1 0 0)
+
+== Stage 1: DUT power via VTref (EN_VTREF closed)
+[FAIL] 1.1  VTref 0.00 V: no DUT supply seen
+              -> Is the DK switched on? Cable on the DK "Debug in" connector (P18), pin 1 to pin 1?
+              -> Meter check: run diag.hold_vtref('A'), then measure J301 pin 1 and TP301 (tool side).
+              -> J pin 1 OK but TP 0 V -> U302 sw3 or EN_VTREF (TP305 should be 3.3 V).
+
+== Stage 7: disconnect (debug off, pin reset, open switches)
+[PASS] 7.2  all switches open, VTref ADC pin 0.000 V
+
+RESULT channel A: FAIL (5 pass, 0 warn, 1 fail)

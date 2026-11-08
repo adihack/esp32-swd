@@ -1,0 +1,8 @@
+# esp-swd / Espressif USB devices: user access without sudo, no ModemManager probing.
+#   sudo cp host/udev/60-esp-swd.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+# - MODE/GROUP on the usb_device node: usbreset, OpenOCD over USB-Serial-JTAG, libusb vendor interface (TinyUSB, later)
+# - ID_MM_DEVICE_IGNORE: ModemManager otherwise opens new ttyACM ports and causes "port is busy" for a few seconds
+SUBSYSTEM=="usb", ATTR{idVendor}=="303a", MODE="0660", GROUP="plugdev", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ENV{ID_MM_DEVICE_IGNORE}="1"
+# disable USB autosuspend for long-running sessions (weeks plugged in)
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="303a", TEST=="power/control", ATTR{power/control}="on"

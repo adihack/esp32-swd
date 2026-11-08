@@ -1,0 +1,8 @@
+nRF52840-AAF0, VTref 2976 mV, 1024 KB random data, window 3
+  erase       0.18 s   5800.9 KB/s
+  program     8.71 s    117.6 KB/s
+  verify      8.97 s    114.1 KB/s
+  total      17.86 s  (57.3 KB/s for erase+program+verify)
+  UICR PSELRESET/APPROTECT before 00000012 00000012 FFFFFF5A after 00000012 00000012 FFFFFF5A: preserved
+  SWD packets 543790, WAIT 589, FAULT 0, no-ACK 0, parity 0
+  restored the LED-chase image and released the channel

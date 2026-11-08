@@ -1,0 +1,13 @@
+DPIDR 0x2BA01477, VTref 2.98 V
+core halted, DHCSR 0x03030003
+programmed 16 words in 191 ms
+verify OK (64 bytes)
+UICR.APPROTECT 0xFFFFFF5A
+UICR.PSELRESET @0x10001200 = 0x00000012 (P0.18 = 0x12)
+UICR.PSELRESET @0x10001204 = 0x00000012 (P0.18 = 0x12)
+CTRL-AP reset -> image starts (watch LED1..LED4 on the DK)
+reconnect: DPIDR 0x2BA01477
+APPROTECT open after reset: the image ran its first instruction
+LEDs on, sampled every 120 ms: LED1 LED1 LED2 LED2 LED2 LED3 LED3 LED4
+halt test: PC=0x0000001E (image code is 0x08..0x2F), resumed
+pin reset done: DK runs the image without the debugger

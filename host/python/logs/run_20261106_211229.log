@@ -1,0 +1,33 @@
+
+== device
+  esp-swd 0.1.0 r5/usj, protocol 1, uptime 38.3 s, reset reason 11, free heap 364032
+  channel A before: {'vtref_mv': None, 'vtref_closed': False, 'swd': 'OPEN', 'uart': 'OPEN', 'holders_swd': 0, 'holders_uart': 0}
+
+== isolation: hold the SWD group (firmware closes VTref, checks it, then closes SWD)
+  {'vtref_mv': 2976, 'vtref_closed': True, 'swd': 'CLOSED', 'uart': 'OPEN', 'holders_swd': 1, 'holders_uart': 0}
+
+== attach: connect, power-up, detect target module
+  DPIDR 0x2BA01477, part nRF52840-AAF0, locked=False (2 ms)
+    flash 0x00000000 + 0x100000 (sector 4096)
+    otp   0x10001000 + 0x1000 (sector 4096)
+    ram   0x20000000 + 0x40000 (sector 4)
+
+== RAM throughput (MEM-AP block transfers, 16 KB at 0x20008000)
+  write 168 ms (95.2 KB/s), read 170 ms (94.3 KB/s), compare OK
+  device-side last op: 16159 us; stats {'xfers': 8306, 'wait': 0, 'fault': 0, 'noack': 0, 'parity': 0, 'last_op_us': 16159}
+
+== flash: erase page 0, program, verify
+  erase   85 ms
+  program 5 ms (64 bytes)
+  verify  1 ms: OK
+
+== UICR: reset pin P0.18 and APPROTECT HwDisabled (only if still erased)
+  before: PSELRESET 0x00000012 0x00000012, APPROTECT 0xFFFFFF5A
+  after:  PSELRESET 0x00000012 0x00000012, APPROTECT 0xFFFFFF5A
+
+== reset (CTRL-AP): the image must run and keep APPROTECT open
+  LEDs on, every 120 ms: LED1 LED1 LED1 LED2 LED2 LED3 LED3 LED3 LED4 LED4
+  stats {'xfers': 8926, 'wait': 0, 'fault': 0, 'noack': 0, 'parity': 0, 'last_op_us': 208}
+
+== detach and release (isolated again)
+  {'vtref_mv': None, 'vtref_closed': False, 'swd': 'OPEN', 'uart': 'OPEN', 'holders_swd': 0, 'holders_uart': 0}

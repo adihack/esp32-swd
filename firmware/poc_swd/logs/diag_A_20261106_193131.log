@@ -1,0 +1,44 @@
+r5 board test, channel A: SWDIO=GPIO4 SWCLK=GPIO5 NRST_DRV=GPIO7 NRST_SENSE=GPIO15 VTREF_ADC=GPIO8 EN_SWD=GPIO9 EN_VTREF=GPIO10
+
+== Stage 0: board self-test (all switches open, DUT not involved)
+[PASS] 0.1  EN_VTREF, EN_SWD, EN_UART, NRST_DRV driven low (all switches open)
+[PASS] 0.2  VTref ADC pin 0.000 V with EN_VTREF open (pulled to 0 by R316)
+[PASS] 0.3  tool-side idle levels: SWDIO=1 SWCLK=0 SWO=1 NRST_SENSE=1 UART_RX=1
+[PASS] 0.4  nRESET driver: DRV=1 -> SENSE=0, DRV=0 -> SENSE=1 (Q301 works, switch open)
+[INFO] 0.5  pull-probe baseline (45k internal pull vs 100k external): SWCLK+pu=1 SWDIO+pd=0 NRST+pd=0 (expected 1 0 0)
+
+== Stage 1: DUT power via VTref (EN_VTREF closed)
+[PASS] 1.1  VTref 2.98 V (ADC pin 1.488 V): DUT powered
+[WARN] 1.2  DUT VDD 2.98 V < 3.3 V: tool highs are 0.32 V above DUT VDD (nRF52840 abs max VDD+0.3 V)
+              -> Acceptable for a short board test (33R + DRIVE_0 limit clamp current).
+              -> Production: run DUTs at 3.3 V or add VTref-tracking I/O (rev E topic).
+[INFO] 1.3  VTref noise: min 2.978 max 2.980 V
+
+== Stage 2: close EN_SWD, check the lines on the DUT side
+[PASS] 2.1  EN_SWD closed (interlock passed), VTref now 2.98 V (delta +0.004 V)
+[INFO] 2.2  idle levels with switch closed: SWDIO=1 SWCLK=0 SWO=1 NRST_SENSE=1
+[PASS] 2.3  SWCLK reaches the DUT: its internal pull-down is visible (1 -> 0)
+[PASS] 2.3  SWDIO reaches the DUT: its internal pull-up is visible (0 -> 1)
+[PASS] 2.3  nRESET reaches the DUT: its internal pull-up is visible (0 -> 1)
+
+== Stage 3: nRESET through to the DUT (the DK restarts once - watch its LEDs)
+[PASS] 3.1  nRESET asserted (SENSE=0), released, line high again after 71 us
+
+== Stage 4: SWD link (DPIDR)
+[PASS] 4.1  DPIDR 0x2BA01477 read with half-period 0 us (designer 0x23B, DPv1, partno 0xBA)
+[PASS] 4.2  DPIDR matches nRF52 (Cortex-M4 SW-DP 0x2BA01477)
+[INFO] 4.3  bit-bang SWCLK ~24086 Hz
+[PASS] 4.4  50/50 DPIDR re-reads clean
+
+== Stage 5: debug power-up, access ports
+[PASS] 5.1  CDBGPWRUPACK/CSYSPWRUPACK set, CTRL/STAT 0xF0000000
+[WARN] 5.2  AP0 IDR 0x23000000 (AHB-AP expects 0x24770011)
+[PASS] 5.2  AP1 IDR 0x02880000 (Nordic CTRL-AP expects 0x02880000)
+[WARN] 5.3  APPROTECT enabled: memory access blocked
+              -> diag.recover('A', really=True) erases the whole chip and unlocks it (DESTRUCTIVE).
+
+== Stage 7: disconnect (debug off, pin reset, open switches)
+[PASS] 7.1  debug power-down + pin reset done
+[PASS] 7.2  all switches open, VTref ADC pin 0.000 V
+
+RESULT channel A: PASS with warnings (17 pass, 3 warn, 0 fail)

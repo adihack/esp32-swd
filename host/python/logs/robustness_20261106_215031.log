@@ -1,0 +1,19 @@
+== 1. reset-halt
+  attached nRF52840-AAF0, VTref 2976 mV
+  [PASS] reset-halt halts the core DHCSR=0x00030003
+  [PASS] normal reset afterwards, image runs LEDs 1 1 1 2 2 3 3 3 4 4
+== 2. panic with the SWD group closed
+  before: swd=CLOSED vtref_closed=True, attached nRF52840-AAF0
+  [PASS] board came back by itself uptime 348 ms, reset reason 4 (4 = panic)
+  [PASS] reset reason is PANIC 
+  [PASS] channel isolated after the crash {'vtref_mv': None, 'vtref_closed': False, 'swd': 'OPEN', 'uart': 'OPEN', 'holders_swd': 0, 'holders_uart': 0}
+== 3. host loss mid-session
+  attached nRF52840-AAF0; closing the port without release/detach
+  [PASS] channel isolated after host loss {'vtref_mv': None, 'vtref_closed': False, 'swd': 'OPEN', 'uart': 'OPEN', 'holders_swd': 0, 'holders_uart': 0}
+  [PASS] session ended (no stale attach) MEM_READ -> cmd 0x24 failed: invalid state (-10)
+== 4. REBOOT: invalid mode rejected; normal reboot with SWD held comes back isolated
+  [PASS] REBOOT(0xFF) rejected cmd 0x03 failed: invalid argument (-1)
+  [PASS] came back after REBOOT(0) reset reason 3 (3 = software)
+  [PASS] channel isolated after REBOOT {'vtref_mv': None, 'vtref_closed': False, 'swd': 'OPEN', 'uart': 'OPEN', 'holders_swd': 0, 'holders_uart': 0}
+
+10/10 checks passed
