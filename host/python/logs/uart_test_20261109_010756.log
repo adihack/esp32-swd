@@ -1,0 +1,38 @@
+esp-swd 0.2.0 r5/usj, protocol 2
+nRF52840-AAF0, VTref 2976 mV, SWD 8000 kHz
+
+1. flash
+  [PASS] test firmware programmed and CRC-verified  3300 bytes in 0.11 s
+2-3. UART open, boot banner
+  [PASS] UART group closed by the interlock  VTref 2978 mV, tool UART 115201 baud
+  [PASS] boot banner after an SWD reset  'ESWTEST nrf52840 uart 1 resetreas=0x00000004'
+  [PASS] ping -> pong (tool TX -> DK)  'pong'
+4. echo
+  [PASS] echo 11 KB at 115200 baud  1.01 s, 11.2 KB/s each way
+  [PASS] DK switches to 460800 baud  'ok baud 460800'
+  [PASS] ping at 460800  tool 460929 baud, nRF 457143 baud (-0.82 %)
+  [PASS] echo 45 KB at 460800 baud  1.01 s, 44.7 KB/s each way
+  [PASS] DK switches to 1000000 baud  'ok baud 1000000'
+  [PASS] ping at 1000000  tool 1000000 baud, nRF 1000000 baud (+0.00 %)
+  [PASS] echo 97 KB at 1000000 baud  1.11 s, 87.8 KB/s each way
+5. full duplex
+  [PASS] full duplex 195 KB each way at 1000000 baud  2.26 s; DK -> tool 0 bad bytes; DK says 'dup got=200000 err=0'
+6. DK -> tool stream with SWD traffic and a host stall
+  [PASS] stream 1024 KB at 1000000 baud, byte-exact through a 250 ms host stall  11.08 s, 92.4 KB/s, stalled yes, usb_drop 0
+  [PASS] SWD reads during the stream  2676 x 1 KB AHB-AP reads
+7. tool -> DK
+  [PASS] 256 KB to the DK at 1000000 baud, CRC-32 on the DK  2.63 s, 97.4 KB/s, DK 'crc f58404b8'
+8. isolation
+  [PASS] released: switches open, nothing received, writes refused  group OPEN, 0 bytes in 0.5 s, write refused
+  [PASS] held again: ticks resume, the DK kept running  tick 4 -> 62
+  [PASS] TX re-routed after the closing  'pong'
+9. error counters
+  [PASS] tool: no lost bytes (UART FIFO, RX buffer, USB)  rx 2755363, tx 1182126, fifo_ovf 0, buf_full 0, usb_drop 0
+  [PASS] tool: line errors at most 2 (from cutting the line in step 8)  framing 0, parity 0, break 0
+  [PASS] DK: no receive errors  stat rx=619897 ovr=0 par=0 frm=0 brk=0
+10. detach: nRESET
+  [PASS] pin reset reaches the DK  'ESWTEST nrf52840 uart 1 resetreas=0x00000001', before it: ['\x00']
+
+released: {'vtref_mv': None, 'vtref_closed': False, 'swd': 'OPEN', 'uart': 'OPEN', 'holders_swd': 0, 'holders_uart': 0}
+
+22/22 passed

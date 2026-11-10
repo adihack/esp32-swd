@@ -155,6 +155,8 @@ static esw_err_t nrf52_probe(esw_target_t *t)
 static esw_err_t nrf52_attach(esw_target_t *t)
 {
     uint32_t open = 0;
+    if (t->core != 0)
+        return ESW_ERR_ARG;
     esw_memap_init(&t->mem, t->dap, ESW_NRF52_AHB_AP, ESW_CSW_CORTEXM_PROT);
     esw_cortexm_init(&t->cpu, &t->mem);
     t->nregions = 0;

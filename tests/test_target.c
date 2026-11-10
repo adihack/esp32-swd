@@ -4,6 +4,7 @@
 #include "rig.h"
 #include "esw/target.h"
 #include "esw/targets/nrf52.h"
+#include "esw/targets/generic.h"
 
 /* the 64-byte LED-chase image flashed to the real DK (firmware/poc_swd/device/nrf_blinky.py) */
 static const uint32_t blinky[16] = {
@@ -30,6 +31,35 @@ static void detect_unlocked(void)
     CHECK_EQ(tgt.nregions, 3);
     CHECK(esw_target_region(&tgt, 0, 64) != NULL);
     CHECK(esw_target_region(&tgt, SIM_FLASH_SIZE - 4, 8) == NULL);   /* runs past the end */
+}
+
+/* Raw attach skips the chip modules: the generic Cortex-M module takes AP0, gives memory access, no flash. */
+static void raw_attach_takes_generic_module(void)
+{
+    rig_t *r = rig_init(0);
+    CHECK_OK(esw_dap_connect(&r->dap, NULL));
+    CHECK_OK(esw_dap_power_up(&r->dap, 10));
+    CHECK_OK(esw_target_detect_core(&tgt, &r->dap, &r->clk, ESW_TARGET_CORE_RAW));
+    CHECK(tgt.drv == &esw_target_generic);
+    CHECK_EQ(tgt.locked, 0);
+    CHECK(strcmp(tgt.part, "Cortex-M4 410FC241") == 0);
+    CHECK_EQ(tgt.nregions, 0);
+    CHECK_ERR(esw_target_erase(&tgt, 0, 4096), ESW_ERR_NOT_FOUND);   /* no flash region: nothing to erase */
+    uint32_t v = 0;
+    CHECK_OK(esw_mem_read32(&tgt.mem, 0xE000ED00u, &v));
+    CHECK_EQ(v, 0x410FC241u);
+    /* a raw attach to an AP that does not exist reads IDR 0: still attached, but no memory access */
+    CHECK_OK(esw_target_detect_core(&tgt, &r->dap, &r->clk, ESW_TARGET_CORE_RAW | 5u));
+    CHECK_EQ(tgt.locked, 1);
+}
+
+/* A single-core module refuses any other core instead of silently attaching core 0. */
+static void single_core_module_refuses_core_1(void)
+{
+    rig_t *r = rig_init(0);
+    CHECK_OK(esw_dap_connect(&r->dap, NULL));
+    CHECK_OK(esw_dap_power_up(&r->dap, 10));
+    CHECK_ERR(esw_target_detect_core(&tgt, &r->dap, &r->clk, 1), ESW_ERR_ARG);
 }
 
 static void locked_then_unlock_without_reset(void)
@@ -250,6 +280,8 @@ static void erased_uicr_locks_on_reset(void)
 int main(void)
 {
     RUN(detect_unlocked);
+    RUN(raw_attach_takes_generic_module);
+    RUN(single_core_module_refuses_core_1);
     RUN(locked_then_unlock_without_reset);
     RUN(program_verify_reset);
     RUN(bulk_program_paced_by_stall);

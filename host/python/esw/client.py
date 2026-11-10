@@ -1,7 +1,15 @@
 # SPDX-License-Identifier: MIT
-"""esp-swd host client over a serial transport (r5 test firmware: USB-Serial-JTAG CDC)."""
+"""esp-swd host client over a serial transport (r5 test firmware: USB-Serial-JTAG CDC).
+
+A reader thread owns the receive side: it matches responses to requests by sequence number and collects UART RX
+events per channel, so requests may come from several threads and UART data arrives while a request is running.
+While idle, the client sends a PING every `keepalive` seconds: the firmware treats a silent host as gone and
+isolates its channels (a listen-only UART sniffer would otherwise be cut off after a few seconds).
+"""
 import struct
+import threading
 import time
+import zlib
 
 import serial
 
@@ -16,45 +24,175 @@ class EswError(Exception):
 
 class Esw:
     MAX_WORDS = 512
+    UART_CHUNK = 2048       # data bytes per UART_WRITE frame
+    UART_BUF_MAX = 64 << 20   # per channel, if nobody reads: oldest data is dropped beyond this
 
-    def __init__(self, port="/dev/ttyACM0", timeout=10.0):
+    def __init__(self, port="/dev/ttyACM0", timeout=10.0, keepalive=1.0):
         self.ser = serial.Serial(port, 115200, timeout=0.05)
         self.timeout = timeout
+        self.keepalive = keepalive
         self.seq = 0
-        self.rx = bytearray()
         self.bad_frames = 0
         self.ser.reset_input_buffer()
+        self._tx_lock = threading.Lock()
+        self._cv = threading.Condition()
+        self._pending = {}      # seq -> cmd, for requests waiting for a response
+        self._done = {}         # seq -> (status, body)
+        self._inflight = {}     # seq -> (budget key, request bytes the board has not answered yet)
+        self._inflight_bytes = {}   # budget key -> bytes: "dev", or a channel number on firmware with proto >= 4
+        self.proto = 0          # the board's protocol version, read below
+        self._error = None
+        self._last_tx = time.monotonic()
+        self._ucv = threading.Condition()
+        self._uart = [bytearray(), bytearray()]
+        self.uart_events = [0, 0]   # RX event frames received
+        self.uart_flags = [0, 0]    # OR of every ESW_UART_RX_* flag seen
+        self.uart_trimmed = [0, 0]  # bytes dropped here because nobody read them
+        self.uart_backend = ["off", "off"]
+        self.regions = {}        # per channel: memory regions of the last attach
+        self.on_uart = None         # optional callback(ch, ts_us, flags, data) on the reader thread; replaces buffering
+        self._stop = threading.Event()
+        self._reader = threading.Thread(target=self._read_loop, name="esw-reader", daemon=True)
+        self._reader.start()
+        try:
+            self.proto = self.info()["proto"]
+        except Exception:  # noqa: BLE001 - an old or busy board: keep the conservative single budget
+            self.proto = 0
 
     def close(self):
+        self._stop.set()
+        self._reader.join(timeout=2)
         self.ser.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     # ---- transport ---------------------------------------------------------------------------------------
     window = 1   # frames in flight for bulk commands (program/verify/mem_write); responses come back in order
     MAX_WINDOW = 3   # the board's USB RX ring is 8 KB with no flow control: at most 3 full frames fit
+    # The same limit across threads: unanswered request bytes stay below this. The reader thread returns a frame's
+    # bytes as soon as its response arrives, so no thread can hold credit hostage. Firmware with proto >= 4 moves
+    # channel requests straight into a per-channel queue of CH_QUEUE frames: each channel then has its own budget
+    # and a slow channel no longer starves the other.
+    RX_BUDGET = 7168
+    CH_BUDGET = P.CH_QUEUE * 2310   # CH_QUEUE full frames (2 KB data + header + COBS + CRC + delimiter)
 
-    def _send(self, cmd, data=b""):
-        self.seq = (self.seq + 1) & 0xFF
-        self.ser.write(P.frame_encode(bytes([self.seq, cmd]) + data))
-        return self.seq
+    def _budget(self, cmd, data):
+        if self.proto >= 4 and data and data[0] < 2 and (cmd in (P.CH_HOLD, P.CH_RELEASE) or 0x20 <= cmd <= 0x2F):
+            return data[0], self.CH_BUDGET
+        return "dev", self.RX_BUDGET
+
+    def _read_loop(self):
+        buf = bytearray()
+        try:
+            while not self._stop.is_set():
+                chunk = self.ser.read(self.ser.in_waiting or 1)   # returns as soon as bytes arrive
+                if chunk:
+                    buf += chunk
+                    while True:
+                        i = buf.find(0)
+                        if i < 0:
+                            break
+                        raw = bytes(buf[:i])
+                        del buf[:i + 1]
+                        if raw:
+                            self._dispatch(raw)
+                    if len(buf) > 65536:   # no delimiter in 64 KB: garbage, resynchronise
+                        buf.clear()
+                        self.bad_frames += 1
+                if self.keepalive and time.monotonic() - self._last_tx > self.keepalive:
+                    self._send(P.PING, b"", track=False)
+        except Exception as e:  # noqa: BLE001 - serial gone (unplug, close): wake every waiter with the error
+            if not self._stop.is_set():
+                self._error = e
+        finally:
+            with self._cv:
+                self._cv.notify_all()
+            with self._ucv:
+                self._ucv.notify_all()
+
+    def _dispatch(self, raw):
+        pl = P.frame_decode(raw)
+        if pl is None or len(pl) < 3:
+            self.bad_frames += 1   # e.g. boot ROM text after a reset
+            return
+        cmd = pl[1]
+        if P.EVT_FIRST <= cmd <= P.EVT_LAST:
+            if cmd == P.EVT_UART_RX and len(pl) >= 9 and pl[3] < 2:
+                self._uart_event(pl[3], pl[4], struct.unpack_from("<I", pl, 5)[0], pl[9:])
+            return
+        with self._cv:
+            if self._pending.get(pl[0]) == (cmd & 0x7F) and cmd & 0x80:
+                self._done[pl[0]] = (struct.unpack("b", pl[2:3])[0], pl[3:])
+                self._release(pl[0])   # the board consumed the request
+                self._cv.notify_all()
+
+    def _uart_event(self, ch, flags, ts, data):
+        self.uart_events[ch] += 1
+        self.uart_flags[ch] |= flags
+        cb = self.on_uart
+        if cb:
+            cb(ch, ts, flags, data)
+            return
+        with self._ucv:
+            b = self._uart[ch]
+            b += data
+            if len(b) > self.UART_BUF_MAX:
+                cut = len(b) - self.UART_BUF_MAX
+                del b[:cut]
+                self.uart_trimmed[ch] += cut
+            self._ucv.notify_all()
+
+    def _send(self, cmd, data=b"", track=True):
+        n = len(data) + len(data) // 254 + 8   # encoded frame size, upper bound
+        key, limit = self._budget(cmd, data)
+        if track:
+            with self._cv:
+                deadline = time.monotonic() + self.timeout
+                while self._inflight_bytes.get(key, 0) and self._inflight_bytes[key] + n > limit:
+                    if self._error:
+                        raise ConnectionError("esp-swd link lost: %s" % self._error)
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        raise TimeoutError("no responses: %d request bytes unanswered" % self._inflight_bytes[key])
+                    self._cv.wait(left)
+                self._inflight_bytes[key] = self._inflight_bytes.get(key, 0) + n
+        with self._tx_lock:
+            self.seq = (self.seq + 1) & 0xFF
+            seq = self.seq
+            if track:
+                with self._cv:
+                    self._pending[seq] = cmd
+                    self._done.pop(seq, None)
+                    self._inflight[seq] = (key, n)
+            self.ser.write(P.frame_encode(bytes([seq, cmd]) + data))
+            self._last_tx = time.monotonic()
+        return seq
+
+    def _release(self, seq):   # with self._cv held
+        key, n = self._inflight.pop(seq, (None, 0))
+        if key is not None:
+            self._inflight_bytes[key] -= n
 
     def _recv(self, seq, cmd, timeout):
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            chunk = self.ser.read(self.ser.in_waiting or 1)   # return as soon as bytes arrive
-            if chunk:
-                self.rx += chunk
-            while b"\x00" in self.rx:
-                raw, _, rest = bytes(self.rx).partition(b"\x00")
-                self.rx = bytearray(rest)
-                if not raw:
-                    continue
-                pl = P.frame_decode(raw)
-                if pl is None:
-                    self.bad_frames += 1   # e.g. boot ROM text after a reset
-                    continue
-                if len(pl) >= 3 and pl[0] == seq and pl[1] == (cmd | 0x80):
-                    return struct.unpack("b", pl[2:3])[0], pl[3:]
-        raise TimeoutError("no response to cmd 0x%02X" % cmd)
+        with self._cv:
+            try:
+                while seq not in self._done:
+                    if self._error:
+                        raise ConnectionError("esp-swd link lost: %s" % self._error)
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        raise TimeoutError("no response to cmd 0x%02X" % cmd)
+                    self._cv.wait(left)
+                return self._done.pop(seq)
+            finally:
+                self._pending.pop(seq, None)
+                self._release(seq)   # timed out: give the credit back
+                self._cv.notify_all()
 
     def request(self, cmd, data=b"", timeout=None, check=True):
         seq = self._send(cmd, data)
@@ -68,7 +206,7 @@ class Esw:
         inflight = []
         for pl in payloads:
             inflight.append(self._send(cmd, pl))
-            if len(inflight) >= max(1, min(self.window, self.MAX_WINDOW)):
+            if len(inflight) >= max(1, min(self.window, P.CH_QUEUE if self.proto >= 4 else self.MAX_WINDOW)):
                 st, body = self._recv(inflight.pop(0), cmd, timeout)
                 if st != 0:
                     raise EswError(cmd, st, body)
@@ -113,12 +251,18 @@ class Esw:
             time.sleep(0.02)
 
     # ---- SWD / target ------------------------------------------------------------------------------------------
-    def attach(self, ch, clock=0, phy=1):
+    def attach(self, ch, clock=0, phy=1, core=0, raw=False):
         """phy 1 (default): ESP32-S3 dedicated GPIO, clock in Hz (0 = 8 MHz); phy 0: portable bit-bang (clock =
-        half-period busy loops). The firmware reports the actual dgpio clock in khz."""
-        st, d = self.request(P.SWD_ATTACH, struct.pack("<BIB", ch, clock, phy), check=False)
+        half-period busy loops). The firmware reports the actual dgpio clock in khz. core: multi-core parts
+        (nRF5340: 0 application, 1 network); the generic Cortex-M module takes it as the AP index. raw: skip the
+        chip modules, attach the generic module to AP <core> (diagnosis and recovery)."""
+        st, d = self.request(P.SWD_ATTACH, struct.pack("<BIBB", ch, clock, phy, core | (0x80 if raw else 0)),
+                             check=False)
+        return self._target_info(P.SWD_ATTACH, ch, st, d)
+
+    def _target_info(self, cmd, ch, st, d):
         if len(d) < 40:   # argument errors come back without a body
-            raise EswError(P.SWD_ATTACH, st, d)
+            raise EswError(cmd, st, d)
         dpidr, locked, nreg, khz = struct.unpack_from("<IBBH", d)
         part = d[8:40].split(b"\x00")[0].decode()
         regions = []
@@ -127,14 +271,19 @@ class Esw:
             regions.append(dict(start=start, size=size, sector=sector, kind=P.MEM_KIND.get(kind, kind)))
         info = dict(status=st, dpidr=dpidr, locked=bool(locked), part=part, regions=regions, khz=khz)
         if st != 0:
-            raise EswError(P.SWD_ATTACH, st, d)
+            raise EswError(cmd, st, d)
+        self.regions[ch] = regions
         return info
 
     def detach(self, ch):
         self.request(P.SWD_DETACH, bytes([ch]))
 
     def unlock(self, ch, allow_erase=False):
-        self.request(P.TGT_UNLOCK, struct.pack("<BI", ch, P.UNLOCK_ALLOW_ERASE if allow_erase else 0), timeout=20)
+        """Regain access to a protected part (allow_erase: by mass erase). Returns the attach info as it is now; do
+        not attach again before programming: that resets the part, and an erased nRF5340 shuts its port again."""
+        st, d = self.request(P.TGT_UNLOCK, struct.pack("<BI", ch, P.UNLOCK_ALLOW_ERASE if allow_erase else 0),
+                             timeout=60, check=False)
+        return self._target_info(P.TGT_UNLOCK, ch, st, d)
 
     def reset(self, ch, halt=False):
         self.request(P.TGT_RESET, struct.pack("<BI", ch, P.RESET_HALT if halt else 0))
@@ -174,6 +323,12 @@ class Esw:
         x = struct.unpack_from("<7I", d) if len(d) >= 28 else (0,) * 7
         return dict(status=st, us=x[0], errors=x[1], packets=x[2], wait=x[3], fault=x[4], noack=x[5], parity=x[6])
 
+    def test_flash_stress(self, ms=0, gap_ms=250):
+        """Test firmware only: erase+write a flash sector every gap_ms in the background for ms (0: report).
+        -> (ops, busy)"""
+        d = self.request(0x7D, struct.pack("<II", int(ms), int(gap_ms)))
+        return struct.unpack_from("<IB", d)
+
     def test_panic(self):
         """Test firmware only: deliberate abort() after replying (checks that a crash isolates and recovers)."""
         self.request(0x7E)
@@ -184,6 +339,108 @@ class Esw:
                          timeout=120)
         return struct.unpack_from("<I", d)[0]
 
+    def dap_read(self, ch, reg, ap=None):
+        """Raw DP (ap=None; reg bits 7:4 = DPBANKSEL) or AP register read on an attached session."""
+        d = self.request(P.DAP_RAW, struct.pack("<BBBBI", ch, 0 if ap is None else 2, ap or 0, reg, 0))
+        return struct.unpack_from("<I", d)[0]
+
+    def dap_write(self, ch, reg, value, ap=None):
+        self.request(P.DAP_RAW, struct.pack("<BBBBI", ch, 1 if ap is None else 3, ap or 0, reg, value))
+
     def stats(self, ch):
         x = struct.unpack("<6I", self.request(P.SWD_STATS, bytes([ch])))
         return dict(xfers=x[0], wait=x[1], fault=x[2], noack=x[3], parity=x[4], last_op_us=x[5])
+
+    def flash(self, ch, addr, image: bytes, page=None, verify="crc"):
+        """Erase the pages the image touches, program it, verify it (on-target CRC, or read-back). page: erase
+        granularity; default: the sector size of the region reported at attach."""
+        if page is None:
+            page = next((r["sector"] for r in self.regions.get(ch, ())
+                         if r["start"] <= addr < r["start"] + r["size"]), 4096)
+        if len(image) % 4:
+            image += b"\xff" * (4 - len(image) % 4)
+        start, end = addr - addr % page, addr + len(image)
+        end += (-end) % page
+        self.erase(ch, start, end - start)
+        self.program(ch, addr, image)
+        if verify == "crc":
+            got, want = self.crc32(ch, addr, len(image)), zlib.crc32(image)
+            if got != want:
+                raise EswError(P.TGT_CRC32, -9, struct.pack("<II", got, want))
+        else:
+            self.verify(ch, addr, image)
+
+    # ---- DUT UART ------------------------------------------------------------------------------------------
+    def uart_open(self, ch, baud=115200, parity="N", stopbits=1, rx_filter=True, tx_strong=False, dma=True):
+        """Configure the DUT UART and start streaming RX. The firmware holds the UART group: its switches close as
+        soon as VTref is valid (wait_group(ch, GROUP_UART) to know). Calling it again changes the settings.
+        rx_filter: ignore RX pulses shorter than 1/8 bit (crosstalk from our own TX edges); tx_strong: full TX drive
+        strength instead of the weakest; dma: may take the single DMA engine if it is free (open the faster channel
+        first). Returns the actual baud rate; uart_backend[ch] tells "dma" or "irq"."""
+        flags = (P.UART_PARITY[parity] | (P.UART_STOP2 if stopbits == 2 else 0) |
+                 (0 if rx_filter else P.UART_RX_NOFILT) | (P.UART_TX_STRONG if tx_strong else 0) |
+                 (0 if dma else P.UART_NO_DMA))
+        d = self.request(P.UART_OPEN, struct.pack("<BII", ch, int(baud), flags))
+        self.uart_backend[ch] = P.UART_BACKEND.get(d[4], "?") if len(d) > 4 else "irq"
+        return struct.unpack_from("<I", d)[0]
+
+    def uart_close(self, ch):
+        self.request(P.UART_CLOSE, bytes([ch]))
+
+    def uart_write(self, ch, data: bytes, timeout=30.0):
+        """Send all of data; waits while the board's TX buffer is full."""
+        view, deadline = memoryview(bytes(data)), time.monotonic() + timeout
+        while len(view):
+            chunk = view[:self.UART_CHUNK]
+            n = struct.unpack("<H", self.request(P.UART_WRITE, bytes([ch]) + bytes(chunk))[:2])[0]
+            view = view[n:]
+            if n < len(chunk):
+                if time.monotonic() > deadline:
+                    raise TimeoutError("UART %d: TX stalled" % ch)
+                time.sleep(0.002)
+
+    def uart_read(self, ch, n=None, timeout=1.0):
+        """Up to n received bytes (n None: whatever is there once the first byte arrived). Returns b"" on timeout."""
+        deadline = time.monotonic() + timeout
+        with self._ucv:
+            b = self._uart[ch]
+            while (len(b) < n) if n is not None else not b:
+                left = deadline - time.monotonic()
+                if left <= 0 or self._error:
+                    break
+                self._ucv.wait(left)
+            k = len(b) if n is None else min(n, len(b))
+            out = bytes(b[:k])
+            del b[:k]
+            return out
+
+    def uart_read_until(self, ch, token=b"\n", timeout=2.0):
+        """Received bytes up to and including token; TimeoutError (with the tail seen) if it does not arrive."""
+        deadline = time.monotonic() + timeout
+        with self._ucv:
+            b = self._uart[ch]
+            while True:
+                i = b.find(token)
+                if i >= 0:
+                    out = bytes(b[:i + len(token)])
+                    del b[:i + len(token)]
+                    return out
+                left = deadline - time.monotonic()
+                if left <= 0 or self._error:
+                    raise TimeoutError("UART %d: %r not seen; buffer tail %r" % (ch, token, bytes(b[-80:])))
+                self._ucv.wait(left)
+
+    def uart_pending(self, ch):
+        with self._ucv:
+            return len(self._uart[ch])
+
+    def uart_clear(self, ch):
+        with self._ucv:
+            self._uart[ch].clear()
+
+    def uart_stats(self, ch):
+        d = self.request(P.UART_STATS, bytes([ch]))
+        x = struct.unpack_from("<BBBB10I", d)
+        return dict(open=bool(x[0]), routed=bool(x[1]), backend=P.UART_BACKEND.get(x[2], "?"), baud=x[4], rx=x[5],
+                    tx=x[6], usb_drop=x[7], fifo_ovf=x[8], buf_full=x[9], frame_err=x[10], parity_err=x[11],
+                    brk=x[12], dma_err=x[13])

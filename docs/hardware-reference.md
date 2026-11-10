@@ -204,7 +204,9 @@ Soldering a header onto J201 gives the UART0 console (pins 6/7/9) and three free
 ## 7. Speed limits from the hardware
 - SWD: the path is designed for ≤ 10 MHz (33 Ω series resistor, ~3 pF switch, ESD diode about 1 pF). Typical use is
   2–8 MHz. Cable to the DUT ≤ 20 cm.
-- UART: ≥ 1 Mbaud through the switch.
+- UART: ≥ 1 Mbaud through the switch. Measured: 1 Mbaud full duplex with 0 errors, but only with the ESP32-S3 TX at
+  its weakest drive strength or with the UART RX glitch filter on (the firmware sets both). At full drive, TX edges
+  couple into the tool's own RX over jumper wires: about 7e-4 bytes in error at 460800 baud.
 - SWO: GPIO6/14 can be a UART RX (Manchester or NRZ needs firmware decoding) or an RMT input.
 
 ## 8. Boot, straps and reflashing
@@ -267,7 +269,7 @@ Soldering a header onto J201 gives the UART0 console (pins 6/7/9) and three free
 - UI: one status LED (GPIO2). The brief's per-channel LEDs and button were dropped in revision (d).
 - Phase 2 (not on r5): W5500 Ethernet over SPI (J201 pins reserved), BLE gateway.
 
-## 12. Bring-up status (2026-11-06)
+## 12. Bring-up status (2026-11-06, updated 2026-11-10)
 | Board MAC | Module | State |
 |---|---|---|
 | f0:f5:bd:57:ef:48 | N4, chip v0.2 | USB OK after re-soldering module pad 13 (D−); flash still blank |
@@ -305,7 +307,14 @@ Run with `firmware/poc_swd`, `./run.sh diag A`, on board 2 channel A, against an
 | Dedicated-GPIO SWD engine (`ports/esp32s3/esw_dgpio.c`, `swd_bench.py --phy 1`) | Device-side: 7.37 µs per packet at 8 MHz (bit-bang 31.3 µs), DPIDR 135 k/s, RAM block write 525 KB/s, read 524 KB/s. Soak: about 3.0 M packets each at 8 MHz and 10 MHz with 0 data, parity, no-ACK or FAULT errors (10 MHz is above the nRF52840's 8 MHz spec: margin only). The actual clock matches the request. After the third review (stall re-base, bounded OE fence): 150 kHz and 300 kHz, where interrupts stay enabled during packets, ran with 0 errors; 8 MHz costs 7.5 µs per packet |
 | Full flash, dgpio at 8 MHz | 1 MB random data: erase 0.17 s, program 3.08 s (333 KB/s, about 11.7 µs per word including WAITs, so the real nRF52840 tWRITE is far below the 41 µs worst case), verify by read-back 2.72 s, **or verify by on-target CRC 0.17 s: total 3.42 s** (about 110 s before the bulk path, 17.9 s with bit-bang). A CRC mismatch on one corrupted word was detected |
 | APPROTECT across resets (UICR HwDisabled) | Stays open after reset-halt and after a normal reset with valid, blank (erased page 0) or random flash, as long as the debug session stays connected through the reset. A random 256 KB image locked the chip while it ran; a mass erase (`--allow-erase`) recovered it |
-| Not tested | channel B, UART group (EN_UART), SWO |
+| UART, channel A (2026-11-09, `host/python/examples/uart_test.py`, 22/22) | J302 GND/TX/RX to DK GND/P1.01/P1.02, test firmware `testfw/nrf52840_uart`. Interlock closes U302 sw1/sw2 only with VTref valid; boot banner caught from the first byte after an SWD reset and after an nRESET pin reset; echo byte-exact at 115200, 460800 (nRF actual 457143, −0.8 %) and 1 Mbaud; full duplex 195 KB each way at 1 Mbaud with 0 errors; 1 MB DK → tool byte-exact at 1 Mbaud (DK-limited 93 KB/s) with 2,600 SWD reads in parallel and a 250 ms host stall; 256 KB tool → DK at 97 KB/s, CRC verified on the DK; released group: 0 bytes in, writes refused; held again: ticks resume and TX works (pads re-routed). Counters: 0 FIFO overflow, 0 buffer full, 0 USB drop, 0 framing/parity/break on both ends |
+| UART back-ends (2026-11-09) | `uart_test.py` 22/22 on the DMA back-end (UHCI + GDMA circular chain) and 21/21 on the hardened IRQ back-end; `uart_stress.py` on channel A, 30 s each: 1 Mbaud full duplex 2.5 MB each way + 4,000 SWD reads + a flash sector erase every 250 ms (cache off about 40 ms each): 0 errors, 0 FIFO overflow, 0 buffer full on both back-ends |
+| UART findings | (1) TX edges at full drive corrupted the tool's RX (DK → tool only): fixed by weak drive + RX glitch filter (defaults). (2) `usb_serial_jtag_is_connected()` reports brief false disconnects under load: not used to drop data any more. (3) An nRESET pin reset of the DK shows up as one 0x00 byte on the tool's RX before the banner (not seen with an SWD reset) |
+| Channel B, first powered target (2026-11-10) | VTref 3.27 V, SWD at 8 MHz with 0 errors over 1.06 M transfers. With the 10-pin cable rotated 180° VTref read **2.70 V**: pin 1 then sits on the DUT's nRESET, whose pull-up (STM32: about 40 kΩ) against the 200 kΩ divider gives about 2.75 V, just under the 2.8 V threshold, so the interlock stayed open (correct). An earlier 1.72 V was another wrong connection |
+| STM32U585 (channel B, 2026-11-10) | DPIDR 0x0BE12477, TARGETID 0x24820041, DBGMCU_IDCODE 0x30016482, OPTR 0x1FEFF8AA (RDP 0, TZEN 0, dual bank). Bank erase 0.33 s; 2 MB random burst-programmed in 13.3 s (154 KB/s), on-target CRC 3.9 s (core at 4 MHz after reset); RDP 0 → 1 → unlock (regression, mass erase, option reload, reconnect) in 0.43 s; firmware backed up and restored, boots |
+| nRF5340 (channel A, 2026-11-10) | DPIDR 0x6BA02477, TARGETID 0x50070289, AP0/AP1 AHB-APs, AP2/AP3 CTRL-APs; app and network cores attach at 8 MHz. 1 MB app image: fast whole-flash erase (KMU slots proven empty, NVMC ERASEALL, UICR restored) + program 333 KB/s + CRC = 3.5 s. A random test image shut the debug port after the pin reset (firmware APPROTECT branch); recovered by CTRL-AP ERASEALL and restored from backup |
+| Parallel channels (2026-11-10) | nRF5340 + STM32U585 at once from two host threads: 10.8 s wall against 14.6 s sequential (STM32 on core 1); both sessions end cleanly on host loss and on REBOOT |
+| Not tested | SWO, channel-B UART |
 
 - Note: the DK runs at 2.98 V, so the tool's 3.3 V highs are 0.32 V above DUT VDD. That is at the nRF52840's
   absolute-maximum limit (VDD + 0.3 V).

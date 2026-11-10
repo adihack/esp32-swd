@@ -133,8 +133,14 @@ by a USB soft re-attach, so the PC re-enumerates and no replug is needed.
 - **Verify by on-target CRC.** A built-in CRC-32 loader for any Cortex-M (`loaders/crc32/`, 164 B ARMv6-M Thumb,
   position independent, needs 4 KB of scratch RAM per target module) checks 1 MB in 0.17 s, instead of 2.7 s
   read-back. The host compares it with `zlib.crc32`. Read-back is the fallback.
-- **UARTs** use the UART peripheral with DMA (UHCI/GDMA) and ring buffers; the target is ≥ 1 Mbaud on both channels
-  at once.
+- **UARTs** use the UART peripheral with ring buffers; the target is ≥ 1 Mbaud on both channels at once.
+  - Implemented (2026-11-09): RX events in the framed protocol, with device timestamps; flow-controlled writes;
+    isolation and host loss handled. See `app/README.md`, "DUT UART bridge".
+  - Two back-ends:
+    - **DMA:** UHCI + GDMA circular chain, for one channel (the S3 has one UHCI);
+    - **hardened IRQ:** IRAM ISR, level 3, FIFO threshold 32, for the other.
+  - Measured on channel A, both back-ends: 1 Mbaud full duplex with 0 errors, also under flash erases (cache off) and
+    SWD traffic.
 
 ## 5. Target-side loaders (generic, fast)
 Purpose:
@@ -248,11 +254,17 @@ firmware/bringup, firmware/poc_swd   (MicroPython bring-up and board test; kept 
 3. **M2:** fast SWD PHY (benchmark both options), nRF52840 program and verify via Python, measured against
    10.7 s/MB.
 4. **M3:** UART streams with DMA, timestamps, PTY bridges (sniffing). Optional CDC-ACM.
+   - Done early, on USB-Serial-JTAG: streams with timestamps, interrupt-driven (no DMA). Still open: PTY bridges and
+     CDC-ACM.
 5. **M4:**
    - loader manager with the streaming ABI and SDK, plus the FLM path;
    - STM32U5 internal flash and external flash via loader;
    - optional CMSIS-DAP v2.
+   - Done 2026-11-10: STM32U5 internal flash (TrustZone off; burst programming, RDP unlock), file flashing tool
+     (`flash_image.py`, .hex/.bin). Still open: TrustZone on, external flash via loader, CMSIS-DAP.
 6. **M5:** nRF5340 (app and net cores), parallel channels, soak rig and the 14-day run.
+   - Done 2026-11-10: nRF5340 module (both cores), parallel channels (one SWD worker per channel and core, protocol 4
+     per-channel queues). Still open: soak rig and the 14-day run.
 
 ## 10. Decisions (2026-11-06)
 1. **Host MCU:** ESP32-S3 now. The layers keep any other MCU possible; the ESP32-S31 was an example, not a target list.

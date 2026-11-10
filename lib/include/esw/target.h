@@ -56,6 +56,7 @@ struct esw_target {
     esw_loader_t loader;
     const esw_loader_desc_t *loader_active;
     char part[32];
+    uint32_t core;                        /* requested core (multi-core parts, e.g. nRF5340: 0 app, 1 network) */
     uint32_t locked;
     uint32_t scratch_ram;                 /* ESW_CRC32_LDR_RAM bytes of RAM the probe may use for helpers, 0 = none */
     esw_mem_region_t regions[ESW_TARGET_MAX_REGIONS];
@@ -66,8 +67,13 @@ struct esw_target {
 /* Registry: NULL-terminated table built from the enabled modules (lib/targets/registry.c). */
 extern const esw_target_driver_t *const esw_target_drivers[];
 
-/* Connect is done by the caller (esw_dap_connect + esw_dap_power_up). Tries every module's probe. */
+/* Connect is done by the caller (esw_dap_connect + esw_dap_power_up). Tries every module's probe. core selects the
+ * core of a multi-core part (0 = the main or only core); a module without that core fails attach with ESW_ERR_ARG. */
 esw_err_t esw_target_detect(esw_target_t *t, esw_dap_t *dap, const esw_clock_t *clk);
+esw_err_t esw_target_detect_core(esw_target_t *t, esw_dap_t *dap, const esw_clock_t *clk, uint32_t core);
+/* core | ESW_TARGET_CORE_RAW: skip the chip modules and attach the generic Cortex-M module to AP (core & 0x7F), for
+ * diagnosis and recovery when a chip module refuses a target (ESW_ERR_NOT_FOUND if the generic module is not built) */
+#define ESW_TARGET_CORE_RAW 0x80u
 const esw_mem_region_t *esw_target_region(const esw_target_t *t, uint32_t addr, uint32_t len);
 esw_err_t esw_target_add_region(esw_target_t *t, const esw_mem_region_t *r);
 /* Generic operations: route to the module (direct) or to the loader runtime (loader regions). */

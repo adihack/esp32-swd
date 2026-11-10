@@ -6,6 +6,9 @@
 2. panic with the SWD group closed: the board must come back by itself, isolated, still answering
 3. host loss: a client that holds SWD and is attached disappears without releasing; the firmware must end the
    session (debug off, pin reset) and isolate the channel
+4. REBOOT: invalid mode rejected; a normal reboot with SWD held comes back isolated
+5. CRC verify on the target detects a corrupted word
+6. host loss with a UART stream open: the firmware closes the stream and isolates the UART group
 """
 import os
 import struct
@@ -148,6 +151,21 @@ finally:
     d.detach(CH)
     d.release(CH, P.GROUP_SWD)
     d.close()
+
+print("== 6. host loss with a UART stream open")
+d = connect()
+baud = d.uart_open(CH, 115200)
+st = d.wait_group(CH, P.GROUP_UART, "CLOSED", 2.0)
+print("  UART open at %d baud, group %s; closing the port without uart_close" % (baud, st["uart"]))
+d.close()
+time.sleep(7.0)   # lease 3 s + grace 2 s + margin
+d = connect()
+after, us = d.state(CH), d.uart_stats(CH)
+check("UART group isolated after host loss",
+      st["uart"] == "CLOSED" and after["uart"] == "OPEN" and not after["vtref_closed"] and not after["holders_uart"],
+      str(after))
+check("UART stream closed by the firmware", not us["open"], "open=%s" % us["open"])
+d.close()
 
 print("\n%d/%d checks passed" % (sum(ok for _, ok in RESULTS), len(RESULTS)))
 sys.exit(0 if all(ok for _, ok in RESULTS) else 1)

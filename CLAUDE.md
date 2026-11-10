@@ -38,6 +38,16 @@ requirements.
 
     Bench-test this path with the GPIO0 short at hand before any OTG image is deployed.
   - Last resort: short module pad 27 (GPIO0) to GND while plugging in USB.
+- **DUT firmware is the user's:** back up a DUT's flash (and UICR/option bytes) before any write, ask first, and
+  restore it afterwards.
+- **nRF5340:** flash only images that run Nordic's startup code. Its debug port has a firmware APPROTECT branch that
+  closes at every reset until `SystemInit` reopens it; a random or half-written image locks the debugger out at the
+  next pin reset (detach pulses nRESET). Recovery is CTRL-AP ERASEALL (`unlock` with allow-erase), which also wipes
+  the UICR's KMU key slots (unreadable to a debugger).
+- **VTref about 2.7 V from a 3.3 V DUT** means the 10-pin cable is rotated (pin 1 on the DUT's nRESET pull-up).
+  Never lower the 2.8 V threshold to "fix" it.
+- **Channels run in parallel**, one worker per CPU core (A on core 1, B on core 0). Anything that issues SWD packets
+  for a channel must run in that channel's worker.
 - **Flash size:** the fitted modules are ESP32-S3-WROOM-1-N4 (4 MB flash, no PSRAM). Never assume PSRAM.
   - Do not use octal-PSRAM sdkconfig options: GPIO35 is B_UART_RX.
 
@@ -63,6 +73,10 @@ requirements.
   - The DK now holds the 64-byte LED-chase test image.
 - **Arm GNU toolchain:** 15.3.rel2 in `~/arm/arm-gnu-toolchain-15.3.rel2-x86_64-arm-none-eabi` (1.1 GB). It is needed
   only to rebuild target-side loaders (`loaders/crc32/build.py`); the library includes the generated `.inc`.
+- **UART test wiring (channel A):** J302.1 GND → DK GND, J302.2 TX → DK P1.01 (D0), J302.3 RX → DK P1.02 (D1),
+  J302.4 open. Test: `host/python/examples/uart_test.py` (flashes `testfw/nrf52840_uart`, needs `~/arm`).
+  - UART TX must stay at the weakest drive strength with the RX glitch filter on (crosstalk into our RX, measured).
+  - Never use `usb_serial_jtag_is_connected()` to decide anything quickly: it reports false disconnects under load.
 - **SWD engine rule:** the ESP32-S3 dedicated-GPIO engine (`ports/esp32s3/esw_dgpio.c`) is per CPU core.
   - Create it on the core that uses it (core 1, `esw_proto`) and never delete it.
   - Call `esw_dgpio_attach()` after every isolation-group close: `gpio_config` on its pins silently re-routes them.

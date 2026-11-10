@@ -3,18 +3,27 @@
 #include "esw/cortexm.h"
 #include <string.h>
 
-esw_err_t esw_target_detect(esw_target_t *t, esw_dap_t *dap, const esw_clock_t *clk)
+esw_err_t esw_target_detect_core(esw_target_t *t, esw_dap_t *dap, const esw_clock_t *clk, uint32_t core)
 {
     memset(t, 0, sizeof(*t));
     t->dap = dap;
     t->clk = clk;
+    t->core = core & ~ESW_TARGET_CORE_RAW;
     for (const esw_target_driver_t *const *p = esw_target_drivers; *p; p++) {
         t->drv = *p;
+        if ((core & ESW_TARGET_CORE_RAW) && strcmp(t->drv->name, "generic") != 0)
+            continue;
         if (t->drv->probe(t) == ESW_OK)
             return t->drv->attach(t);
+        (void)esw_dap_clear_errors(dap);   /* a probe that touched a missing register leaves a sticky error */
     }
     t->drv = NULL;
     return ESW_ERR_NOT_FOUND;
+}
+
+esw_err_t esw_target_detect(esw_target_t *t, esw_dap_t *dap, const esw_clock_t *clk)
+{
+    return esw_target_detect_core(t, dap, clk, 0);
 }
 
 esw_err_t esw_target_add_region(esw_target_t *t, const esw_mem_region_t *r)

@@ -1,13 +1,23 @@
 # SPDX-License-Identifier: MIT
 """esp-swd wire protocol: COBS + CRC-16/CCITT-FALSE framing, command numbers (mirrors lib/include/esw/proto.h)."""
+import binascii
 
-PROTO_VERSION = 1
+PROTO_VERSION = 4
+CH_QUEUE = 4   # proto >= 4: channel request frames in flight per channel (the board's per-channel queue)
 
 PING, INFO, REBOOT = 0x01, 0x02, 0x03
 CH_HOLD, CH_RELEASE, CH_STATE = 0x10, 0x11, 0x12
 SWD_ATTACH, SWD_DETACH, TGT_UNLOCK, TGT_RESET = 0x20, 0x21, 0x22, 0x23
 MEM_READ, MEM_WRITE, TGT_ERASE, TGT_PROGRAM, TGT_VERIFY, SWD_STATS = 0x24, 0x25, 0x26, 0x27, 0x28, 0x29
-SWD_BENCH, TGT_CRC32 = 0x2A, 0x2B
+SWD_BENCH, TGT_CRC32, DAP_RAW = 0x2A, 0x2B, 0x2C
+UART_OPEN, UART_CLOSE, UART_WRITE, UART_STATS = 0x30, 0x31, 0x32, 0x33
+EVT_UART_RX = 0xE0                       # events: seq 0, cmd 0xE0..0xEF, status 0
+EVT_FIRST, EVT_LAST = 0xE0, 0xEF
+UART_PARITY = {"N": 0, "E": 1, "O": 2}   # UART_OPEN flags bits 0-1; bit 2: two stop bits
+UART_STOP2 = 1 << 2
+UART_RX_NOFILT, UART_TX_STRONG, UART_NO_DMA = 1 << 3, 1 << 4, 1 << 5
+UART_BACKEND = {0: "off", 1: "irq", 2: "dma"}
+UART_RX_LOST, UART_RX_ERROR, UART_RX_BREAK = 1 << 0, 1 << 1, 1 << 2
 CRC_RESET_HALT = 1 << 0
 
 GROUP_VTREF, GROUP_SWD, GROUP_UART = 0, 1, 2
@@ -27,30 +37,18 @@ RESET_HALT = 1 << 0
 
 
 def crc16(data: bytes) -> int:
-    crc = 0xFFFF
-    for b in data:
-        crc ^= b << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
-    return crc
+    return binascii.crc_hqx(data, 0xFFFF)   # CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, not reflected
 
 
 def cobs_encode(data: bytes) -> bytes:
-    out = bytearray(b"\x00")
-    code_at, code = 0, 1
-    for b in data:
-        if b == 0:
-            out[code_at] = code
-            code_at, code = len(out), 1
-            out.append(0)
-        else:
-            out.append(b)
-            code += 1
-            if code == 0xFF:
-                out[code_at] = code
-                code_at, code = len(out), 1
-                out.append(0)
-    out[code_at] = code
+    out = bytearray()
+    for chunk in bytes(data).split(b"\x00"):   # every chunk but the last ends in an (implied) zero
+        while len(chunk) >= 254:
+            out.append(0xFF)                     # full block: no implied zero
+            out += chunk[:254]
+            chunk = chunk[254:]
+        out.append(len(chunk) + 1)
+        out += chunk
     return bytes(out)
 
 

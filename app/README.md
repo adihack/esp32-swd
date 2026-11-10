@@ -21,24 +21,144 @@ Then run the example:
 | 1, dedicated GPIO (default in the Python client) | clock in Hz, 0 = 8 MHz, capped at 10 MHz | 7.4 µs per packet at 8 MHz |
 | 0, portable bit-bang | clock = half-period busy loops | 31 µs per packet |
 
-The dgpio engines are created on core 1 at boot (`esw_proto` task) and must only be used from there. Every attach
-re-routes SWCLK/SWDIO to the dedicated signals and self-checks: the board's pin setup runs `gpio_config`, which
-re-routes the pads to plain GPIO.
+Each channel has its own worker task and dgpio engine, so **both channels run at the same time**:
+| Task | Core | Job |
+|---|---|---|
+| `esw_proto` (priority 5) | 1 | reads USB frames; answers device, state and UART commands; queues channel commands |
+| `esw_swd_a` (4) | 1 | channel A: hold/release and every SWD/target command, in order; session supervision |
+| `esw_swd_b` (5) | 0 | channel B, the same; shares core 0 with the interlock tick, the UART task and the USB interrupt |
+
+- Dedicated GPIO is per CPU core: each worker creates its channel's engine on its own core at boot and is the only
+  user. Every attach re-routes SWCLK/SWDIO to the dedicated signals and self-checks: the board's pin setup runs
+  `gpio_config`, which re-routes the pads to plain GPIO.
+- Each channel has a queue of 4 request frames (`ESW_PROTO_CH_QUEUE`, protocol 4); the host keeps at most 4 channel
+  frames in flight per channel. Responses of the two channels may overtake each other (matched by sequence number).
+- **Put the slower, bigger-flash target on channel A**: core 1 is the quiet one. Even a flash-bound target (STM32U5:
+  the flash stalls the bus and the engine polls WAIT) loses time when its core is interrupted.
+- A worker busy back to back gives its core's idle task 1 ms every 100 ms (the task watchdog watches core 0's).
 
 - Below about 480 kHz interrupts stay enabled during packets. A wait that ends more than 16 cycles late restarts the
   schedule from now, so an interrupt stretches one clock phase and never produces catch-up bursts.
-- The host keeps at most 3 frames in flight (`Esw.MAX_WINDOW`): the board's USB receive buffer is 8 KB, with no flow
-  control.
+- The board's USB receive ring is 8 KB with no flow control. Firmware before protocol 4 handled frames in place, so
+  the host kept at most 3 frames in flight in total; now the dispatcher moves channel frames into their queue at
+  once, and the host's limit is per channel (`Esw.CH_BUDGET`, plus a 7 KB budget for everything else).
 
 Benchmarks:
 - `host/python/examples/swd_bench.py --phy 1 --clocks 1e6,4e6,8e6`: on the device, no USB in the loop.
 - `flash_speed.py --size 1M --window 3 --phy 1 --verify crc`: full flow.
+
+## Target modules
+| Module | Parts | Notes |
+|---|---|---|
+| `nrf52` | nRF52 (nRF52840 tested) | CTRL-AP unlock, NVMC, UICR save/restore around ERASEALL |
+| `nrf53` | nRF5340, core 0 application, core 1 network | see the APPROTECT trap below |
+| `stm32u5` | STM32U575/585 (DEV_ID 0x482), U59x/5Ax (0x481) | TrustZone off only; RDP 1 → 0 unlock |
+| `generic` | any Cortex-M (registered last; `attach(..., raw=True)` forces it) | memory access, halt, reset; no flash |
+
+Measured on r5 (2026-11-10, dgpio 8 MHz, `host/python/examples/flash_image.py` and `parallel_flash.py`):
+| Target | Whole-flash image | Erase | Program | On-target CRC | Total |
+|---|---|---|---|---|---|
+| nRF5340 app core | 1 MB | 0.2 s (NVMC ERASEALL, UICR kept) | 3.08 s (333 KB/s) | 0.14 s | 3.5 s |
+| STM32U585 | 2 MB random | 0.33 s (bank erase) | 13.3 s (154 KB/s, burst mode) | 3.9 s | 17.6 s |
+| STM32U585 | real 1.2 MB image (.hex, 4 page runs) | page erase | 213 KB/s (blank quad-words skipped) | | 10.2–11.5 s |
+
+- **STM32U5:** a quad-word (16 B) programs in about 160 µs and a 128-byte burst in about 640 µs; the flash takes the
+  next burst only when the previous one is done, so programming is flash-bound (voltage range 1 instead of 4
+  made no difference). A RAM loader that overlaps the next burst's transfer could reach about 195 KB/s.
+- **nRF5340 APPROTECT trap.** Debug access needs both the UICR branch and a firmware branch that the image's startup
+  code (Nordic's `SystemInit` → `nrf53_handle_approtect()`) reopens after every reset. Flash only images that run it:
+  any other image (or a half-written one) shuts the port at the next pin reset, and only ERASEALL brings it back.
+  ERASEALL also wipes the UICR's KMU key slots, which a debugger cannot read (0xDEADDEAD) or save. The module's fast
+  whole-flash erase runs only after proving every KMU slot empty; otherwise it erases page by page (87 ms each).
+- Flash work starts with one reset-halt per session (nRF5340, STM32U5): a running firmware's protections are gone
+  (MCUboot/TF-M had locked the nRF5340's first 16 KB in the SPU: FLASHREGION[0].PERM = 0x115).
+
+## Parallel flashing
+`parallel_flash.py --a IMAGE --b IMAGE` flashes both channels one after the other, then from two host threads at
+once. nRF5340 app 1 MB (3.5 s alone) + STM32U585 1.2 MB (10–11.5 s alone):
+| Placement | Sequential | Parallel (wall) | Speed-up (ideal) |
+|---|---|---|---|
+| firmware 0.3 (one task) | 14.1 s | 14.6 s | 0.96× |
+| STM32 on channel B (core 0) | 14.9 s | 12.5 s | 1.19× (1.31×) |
+| STM32 on channel A's core (core 1), as in production | 14.6 s | **10.8 s** | 1.34× (1.43×) |
 
 ## CRC verify loader
 `TGT_CRC32` computes `zlib.crc32` of target memory on the target, using the built-in loader
 (`lib/core/loader/crc32_blob.inc`, generated).
 - Rebuild it with `../.venv/bin/python ../loaders/crc32/build.py`, which needs the Arm GNU toolchain in `~/arm`.
 - The generator re-verifies the blob in unicorn before it writes the `.inc`.
+
+## DUT UART bridge
+Each channel's DUT UART is bridged over the same framed protocol (`lib/include/esw/proto.h`, Python `Esw.uart_*`):
+
+| Command | What it does |
+|---|---|
+| `UART_OPEN` (0x30) | Configures the UART (baud 300 to 5 M, parity, stop bits) and holds the UART switch group. The switches close only once VTref is valid. Sent again, it changes the settings. Returns the actual baud rate and the back-end (DMA or IRQ) |
+| `UART_CLOSE` (0x31) | Waits for TX to drain, stops the stream and releases the hold (the switches open) |
+| `UART_WRITE` (0x32) | Queues TX data and returns how much fit. Refused with `ESW_ERR_INTERLOCK` unless the group is closed and the pads are routed |
+| `UART_STATS` (0x33) | Counters: rx, tx, USB drops, FIFO overflows, buffer-full events, framing/parity/break errors |
+| event 0xE0 | RX data, pushed unsolicited: channel, flags (data lost / line error / break), device timestamp (µs), up to 2 KB |
+
+How it works:
+- **UART1 is channel A, UART2 is channel B.** Each runs on one of two back-ends (`ports/esp32s3/esw_uart.c`). Both
+  have a 32 KB RX ring (320 ms at 1 Mbaud) and an 8 KB TX ring.
+  - **DMA:** UART → UHCI → GDMA into a circular chain of 32 × 256 B descriptors that never stops. A line-idle EOF
+    only closes the current descriptor early. The GDMA interrupt (IRAM) moves finished descriptors into the ring.
+    The hardware alone buffers 8 KB (80 ms at 1 Mbaud). TX is also DMA. IDF's `uhci` driver is not used: it stops
+    and re-arms after every EOF and cannot be deleted while the line is quiet.
+  - **IRQ:** the ESP-IDF driver, hardened: ISR in IRAM (`CONFIG_UART_ISR_IN_IRAM`), interrupt level 3, FIFO-full
+    threshold 32 of 128 bytes (0.96 ms of margin at 1 Mbaud).
+  - The ESP32-S3 has one UHCI. The DMA back-end goes to the first channel opened while it is free (open the faster
+    channel first). `ESW_UART_NO_DMA` keeps a channel on interrupts.
+- **The `esw_uart` task (core 0, every 1 ms):**
+  - it starts and stops back-ends and routes the pads (proto task requests go through a queue);
+  - it moves RX data into event frames;
+  - it owns the UART and GDMA interrupts on core 0. Channel A's SWD engine (core 1) never delays them; channel B's
+    engine shares core 0 and masks interrupts for one packet at a time (about 7 µs at 8 MHz), well inside the RX
+    margin (DMA: 8 KB in hardware; IRQ back-end: 0.96 ms at 1 Mbaud). Not yet measured with both at full load.
+- **Host stalls:** an event that USB cannot take yet stays queued and is retried, while the UART ring absorbs the
+  backlog. Data is dropped only after USB has refused it for 1 s.
+  - Do not use `usb_serial_jtag_is_connected()` for decisions like this. Its start-of-frame monitor allows 3 missed
+    ticks in total, so under load it reports brief false disconnects. It cost 120 bytes before this was changed.
+- **Pin routing:** the board's prepare step runs before every closing of the switch group. It puts TX on a plain
+  GPIO driven high. `esw_uart_route()` then switches the GPIO-matrix source back to the UART, keeping the TX output
+  enabled, so the DUT never sees an edge. Routing happens once per closing, latched by the channel's `opened[]`
+  counter. (`uart_set_pin()` would release TX first and float the DUT's RX line.)
+- **Host loss:** the channel releases the hold, and `supervise()` closes the stream.
+- **Keep-alive:** the Python client PINGs every second while idle, so a listen-only sniffer is not taken for a lost
+  host.
+
+**Signal integrity (measured on r5, jumper wires to an nRF52840 DK, full duplex):**
+- With full TX drive strength, our TX edges coupled into our own RX, and the ESP32-S3 receiver sampled the glitches
+  as bits. DK → tool errors per byte: 9e-5 at 115200, 7e-4 at 460800. Tool → DK stayed clean: the nRF receiver is
+  immune.
+- Defaults are therefore the weakest TX drive (`GPIO_DRIVE_CAP_0`) and the RX glitch filter at 1/8 bit.
+  - Each alone fixes it. Both together: **0 errors in 600 KB per direction at 1 Mbaud**, and none at 115200 or
+    460800.
+  - Flags `ESW_UART_TX_STRONG` and `ESW_UART_RX_NOFILT` switch them back for diagnosis.
+
+**Stress test:** `host/python/examples/uart_stress.py`. It runs everything at once:
+- channel A in full duplex with the DK;
+- channel B through a loopback jumper;
+- SWD reads;
+- a flash sector erase every 250 ms (test hook `0x7D`), which stops the flash cache for about 40 ms each time.
+
+Measured on channel A alone, 30 s at 1 Mbaud: 2.5 MB each way, 4,000 SWD reads, 104 erases. **0 errors and 0
+overflows on both back-ends.**
+
+Back-to-back erases stop the tasks and USB altogether. Even then the DMA back-end recorded 0 FIFO overflows; the
+software ring filled only because nothing could reach the host. The firmware itself never writes flash while
+streaming.
+
+**Hardware test:** `host/python/examples/uart_test.py`, with the wiring in its docstring. J302 GND/TX/RX go to DK
+GND / P1.01 / P1.02. The test firmware is `testfw/nrf52840_uart/`, and the script flashes it over SWD. It checks:
+- the boot banner on an SWD reset and on a pin reset;
+- echo at 115200, 460800 and 1 M;
+- full duplex at 1 M;
+- a 1 MB stream with SWD reads in parallel, through a 250 ms host stall;
+- 256 KB to the DK with a CRC computed on the DK;
+- isolation (no RX, TX refused) and re-routing after the switch closes again;
+- error counters on both ends.
 
 ## Crash safety
 A panic resets only the CPUs, so the GPIO output latches survive. The isolation enables are therefore driven low in

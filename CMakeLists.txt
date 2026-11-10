@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(esp_swd C)
 
-set(ESW_TARGETS "nrf52" CACHE STRING "Target modules to build (semicolon-separated, see lib/targets/)")
+set(ESW_TARGETS "nrf52;nrf53;stm32u5;generic" CACHE STRING "Target modules to build (semicolon-separated, see lib/targets/)")
 option(ESW_BUILD_TESTS "Build host unit tests" ON)
 option(ESW_SANITIZE "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
 

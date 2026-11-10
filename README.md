@@ -21,14 +21,21 @@ Work in progress. What exists and is tested on hardware (board r5, channel A, nR
   Soak: about 3 M packets each at 8 MHz and 10 MHz, 0 errors.
 - **Flashing:** 1 MB of random data on an nRF52840 takes **3.42 s** in total: mass erase 0.17 s, program 3.08 s,
   on-target CRC-32 verify 0.17 s. The data path is PC → USB → ESP32-S3 → SWD → NVMC.
+- **UART bridge (channel A):** byte-exact at 115200, 460800 and 1 Mbaud, full duplex.
+  - A 1 MB stream arrived intact while SWD reads ran in parallel and the host stopped reading for 250 ms.
+  - With the switches open nothing gets through, and writes are refused.
 - **Firmware update:** `idf.py flash` over USB while the firmware runs; two OTA slots with rollback.
+- **Target modules (2026-11-10):** nRF52, **nRF5340** (application and network core) and **STM32U575/585**, plus a
+  generic Cortex-M fallback. Measured: nRF5340 1 MB app image erase + program + CRC verify in 3.5 s; STM32U585 burst
+  programming at 154 KB/s (flash-bound), RDP level 1 → 0 unlock tested.
+- **Parallel channels:** one SWD worker per channel on its own CPU core. nRF5340 + STM32U585 flashed at once:
+  10.8 s against 14.6 s one after the other.
 
 | Not done yet |
 |---|
-| channel B, UART bridge, SWO (untested on hardware) |
-| file-based flashing CLI (hex/bin), parallel channels |
-| TinyUSB vendor interface, optional CMSIS-DAP v2 |
-| STM32U5 and nRF5340 target modules, external-flash loaders on the streaming ABI |
+| SWO and channel-B UART (untested on hardware); UART PTY bridge for terminal tools |
+| TinyUSB vendor interface with USB TTYs, optional CMSIS-DAP v2 |
+| STM32U5 with TrustZone on, external-flash loaders on the streaming ABI, nRF5340 network-core fast path test |
 | multi-day soak |
 
 Hardware is frozen at r5 (design revision d, JLCPCB, 2026-10-23). The two assembled boards carry
@@ -44,6 +51,7 @@ ESP32-S3-WROOM-1-**N4** modules (4 MB flash, no PSRAM), not the N16 in the BOM.
 | `host/python/` | Python host library (`esw`) and examples: flashing, speed test, PHY benchmark, robustness checks |
 | `host/udev/` | udev rule for the board |
 | `loaders/` | Target-side loader sources; `crc32/build.py` rebuilds and verifies the built-in CRC loader |
+| `testfw/` | Bare-metal test firmware for DUTs, e.g. `nrf52840_uart/` for the UART hardware test |
 | `tests/` | Host unit tests against a bit-level SWD target simulator (`tests/sim/`); CI in `.github/workflows/ci.yml` |
 | `docs/hardware-reference.md` | **Start here for hardware.** Pin map, signal chains, polarities, connectors, test pads, interlock rules, boot notes, bring-up results |
 | `docs/firmware-architecture.md` | Firmware architecture, reliability plan, milestones, decisions |
@@ -71,7 +79,13 @@ Host examples (the board enumerates as `303a:1001`, `/dev/ttyACM0`):
 ```
 .venv/bin/python host/python/examples/nrf52_blinky.py --channel A          # attach, flash a test image, watch it run
 .venv/bin/python host/python/examples/flash_speed.py --size 1M --window 3 --verify crc
+.venv/bin/python host/python/examples/uart_test.py                          # UART: wiring in its docstring
+.venv/bin/python host/python/examples/flash_image.py --info --channel B      # identify a target, print its memory map
+.venv/bin/python host/python/examples/flash_image.py --channel B build/app.hex   # .hex or .bin (--addr), CRC-verified
+.venv/bin/python host/python/examples/parallel_flash.py --a app_a.hex --b app_b.hex   # both channels at once
 ```
+nRF5340: `--core 1` selects the network core. Flash only images with Nordic's startup code (see `app/README.md`,
+"nRF5340 APPROTECT trap").
 `nrf52_blinky.py --allow-erase` mass-erases a locked (APPROTECT) chip. Without it, a locked chip is left alone.
 
 ## Hardware in one screen
