@@ -629,7 +629,9 @@ static int handle(const uint8_t *q, int n, uint8_t *r)
         CHAN();
         ATTACHED();
         NEED(5);
-        st = s->tgt.drv->reset(&s->tgt, rd32(a + 1));
+        st = esw_target_finish(&s->tgt);   /* a resident loader ends cleanly before the reset kills it */
+        if (st == ESW_OK)
+            st = s->tgt.drv->reset(&s->tgt, rd32(a + 1));
         break;
     case ESW_CMD_MEM_READ: {
         CHAN();
@@ -640,7 +642,9 @@ static int handle(const uint8_t *q, int n, uint8_t *r)
             st = ESW_ERR_ARG;
             break;
         }
-        st = esw_mem_read_block(&s->tgt.mem, rd32(a + 1), g_words[ch], nw);
+        st = esw_target_sync(&s->tgt);   /* a streaming loader's handed-over data lands first */
+        if (st == ESW_OK)
+            st = esw_mem_read_block(&s->tgt.mem, rd32(a + 1), g_words[ch], nw);
         if (st == ESW_OK) {
             memcpy(r + rl, g_words[ch], nw * 4u);
             rl += (int)(nw * 4u);
@@ -660,7 +664,8 @@ static int handle(const uint8_t *q, int n, uint8_t *r)
         }
         memcpy(g_words[ch], a + 5, nw * 4u);
         if (q[1] == ESW_CMD_MEM_WRITE)
-            st = esw_mem_write_block(&s->tgt.mem, addr, g_words[ch], nw);
+            st = esw_target_sync(&s->tgt) == ESW_OK ? esw_mem_write_block(&s->tgt.mem, addr, g_words[ch], nw)
+                                                    : ESW_ERR_LOADER;
         else if (q[1] == ESW_CMD_TGT_PROGRAM)
             st = esw_target_program(&s->tgt, addr, g_words[ch], nw);
         else

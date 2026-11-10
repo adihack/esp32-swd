@@ -26,10 +26,11 @@ Work in progress. What exists and is tested on hardware (board r5, channel A, nR
   - With the switches open nothing gets through, and writes are refused.
 - **Firmware update:** `idf.py flash` over USB while the firmware runs; two OTA slots with rollback.
 - **Target modules (2026-11-10):** nRF52, **nRF5340** (application and network core) and **STM32U575/585**, plus a
-  generic Cortex-M fallback. Measured: nRF5340 1 MB app image erase + program + CRC verify in 3.5 s; STM32U585 burst
-  programming at 154 KB/s (flash-bound), RDP level 1 → 0 unlock tested.
+  generic Cortex-M fallback. Measured, erase + program + on-target CRC verify: nRF5340 1 MB app image 3.2 s, network
+  core 256 KB 0.71 s; STM32U585 2 MB 7.0 s through a streaming RAM loader (322 KB/s), a real 1.2 MB image 4.2 s;
+  RDP level 1 → 0 unlock tested.
 - **Parallel channels:** one SWD worker per channel on its own CPU core. nRF5340 + STM32U585 flashed at once:
-  10.8 s against 14.6 s one after the other.
+  5.5 s against 7.5 s one after the other (now limited by the USB-Serial-JTAG link, about 485 KB/s).
 
 | Not done yet |
 |---|
@@ -50,7 +51,7 @@ ESP32-S3-WROOM-1-**N4** modules (4 MB flash, no PSRAM), not the N16 in the BOM.
 | `app/` | ESP-IDF v6 firmware for r5 (USB-Serial-JTAG transport). See `app/README.md` |
 | `host/python/` | Python host library (`esw`) and examples: flashing, speed test, PHY benchmark, robustness checks |
 | `host/udev/` | udev rule for the board |
-| `loaders/` | Target-side loader sources; `crc32/build.py` rebuilds and verifies the built-in CRC loader |
+| `loaders/` | Target-side loader sources; `crc32/build.py` (built-in CRC loader) and `stm32u5/build.py` (STM32U5 streaming flash loader) rebuild and verify them in an emulator |
 | `testfw/` | Bare-metal test firmware for DUTs, e.g. `nrf52840_uart/` for the UART hardware test |
 | `tests/` | Host unit tests against a bit-level SWD target simulator (`tests/sim/`); CI in `.github/workflows/ci.yml` |
 | `docs/hardware-reference.md` | **Start here for hardware.** Pin map, signal chains, polarities, connectors, test pads, interlock rules, boot notes, bring-up results |

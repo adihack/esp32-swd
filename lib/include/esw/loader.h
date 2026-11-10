@@ -102,9 +102,14 @@ esw_err_t esw_loader_call_program(esw_loader_t *l, uint32_t addr, const uint32_t
 esw_err_t esw_loader_stream_start(esw_loader_t *l);
 esw_err_t esw_loader_stream_cmd(esw_loader_t *l, esw_ldr_cmd_t cmd, uint32_t addr, uint32_t len, uint32_t arg,
                                 uint32_t timeout_ms, uint32_t *result);
-/* Ring-buffered program: fills free slots while the loader programs earlier ones. len in words, word-aligned. */
+/* Ring-buffered program: fills free slots while the loader programs earlier ones. len in words, word-aligned.
+ * Returns once the data is handed over: the last buffers may still be programming, so successive calls keep the
+ * loader busy without a gap. A failed buffer is reported by a later call: the next program call that reuses its
+ * slot, esw_loader_stream_flush, a command, or stop. */
 esw_err_t esw_loader_stream_program(esw_loader_t *l, uint32_t addr, const uint32_t *data, uint32_t nwords);
-esw_err_t esw_loader_stream_stop(esw_loader_t *l);
+/* Wait until every handed-over buffer is programmed; ESW_ERR_LOADER (last_status set) if any failed. */
+esw_err_t esw_loader_stream_flush(esw_loader_t *l);
+esw_err_t esw_loader_stream_stop(esw_loader_t *l);   /* flushes first */
 
 /* ---- built-in CRC-32 verify loader (any Cortex-M) ------------------------------------------------------
  * 164-byte ARMv6-M Thumb blob (loaders/crc32/, generated into lib/core/loader/crc32_blob.inc), position

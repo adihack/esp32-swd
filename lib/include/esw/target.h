@@ -45,6 +45,9 @@ typedef struct {
                          uint32_t nwords);
     esw_err_t (*reset)(esw_target_t *t, uint32_t flags);
     esw_err_t (*detach)(esw_target_t *t);   /* leave debug state cleanly (optional) */
+    /* Optional: ready the part before a region's RAM loader is downloaded (e.g. reset-halt so no firmware state
+     * remains, raise the core clock); the loader runtime halts the core itself. */
+    esw_err_t (*loader_prepare)(esw_target_t *t, const esw_mem_region_t *r);
 } esw_target_driver_t;
 
 struct esw_target {
@@ -81,6 +84,9 @@ esw_err_t esw_target_erase(esw_target_t *t, uint32_t addr, uint32_t len);
 esw_err_t esw_target_program(esw_target_t *t, uint32_t addr, const uint32_t *data, uint32_t nwords);
 esw_err_t esw_target_verify(esw_target_t *t, uint32_t addr, const uint32_t *data, uint32_t nwords);
 esw_err_t esw_target_finish(esw_target_t *t);   /* stop an active loader */
+/* Wait for a streaming loader's handed-over data to be programmed and report its status: before reading target
+ * memory directly, or to know that a program call's data has landed. */
+esw_err_t esw_target_sync(esw_target_t *t);
 
 #define ESW_CRC_RESET_HALT (1u << 0)   /* reset-halt first: no firmware, DMA or interrupt touches the scratch RAM */
 /* zlib.crc32 of target memory [addr, addr+len). Order of preference: a streaming loader's CRC command (loader

@@ -193,6 +193,22 @@ static void ext_flash_not_reachable_directly(void)
     CHECK_ERR(esw_mem_read32(&tgt.mem, SIM_EXT_BASE, &v), ESW_ERR_FAULT);
 }
 
+/* program() returns before its last buffers are programmed; a failure there comes back from the next sync */
+static void stream_error_reported_at_sync(void)
+{
+    rig_t *r = setup(1);
+    CHECK(r != NULL);
+    fill_image();
+    CHECK_OK(esw_target_erase(&tgt, SIM_EXT_BASE, 4096));
+    CHECK_OK(esw_loader_stream_program(&tgt.loader, SIM_EXT_BASE + SIM_EXT_SIZE - 16u, image, 64));   /* runs past */
+    CHECK_ERR(esw_target_sync(&tgt), ESW_ERR_LOADER);
+    CHECK_EQ(tgt.loader.last_status, 2);
+    CHECK_OK(esw_target_sync(&tgt));   /* reported once; the ring is free again */
+    CHECK_OK(esw_target_program(&tgt, SIM_EXT_BASE, image, 1000));
+    CHECK_OK(esw_target_verify(&tgt, SIM_EXT_BASE, image, 1000));
+    CHECK_OK(esw_target_finish(&tgt));
+}
+
 static void call_abi_erase_program(void)
 {
     rig_t *r = setup(0);
@@ -246,6 +262,7 @@ static void stream_abi_program_and_crc_verify(void)
     CHECK_EQ(tgt.loader.streaming, 1);
     CHECK_EQ(tgt.loader.nbuf, NBUF);
     CHECK_OK(esw_target_program(&tgt, SIM_EXT_BASE, image, 3000));   /* 12000 bytes: 12 buffers through a ring of 2 */
+    CHECK_OK(esw_target_sync(&tgt));   /* program returns once handed over: the last buffers land here */
     CHECK(memcmp(r->sim.ext, image, 12000) == 0);
     CHECK_EQ(seen.prog, 12);
     CHECK_EQ(seen.max_filled, 2);               /* next buffer handed over while the previous was still programming */
@@ -267,5 +284,6 @@ int main(void)
     RUN(call_abi_error_status);
     RUN(call_timeout_halts_core);
     RUN(stream_abi_program_and_crc_verify);
+    RUN(stream_error_reported_at_sync);
     return TT_RESULT();
 }

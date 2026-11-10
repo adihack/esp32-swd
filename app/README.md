@@ -52,19 +52,26 @@ Benchmarks:
 |---|---|---|
 | `nrf52` | nRF52 (nRF52840 tested) | CTRL-AP unlock, NVMC, UICR save/restore around ERASEALL |
 | `nrf53` | nRF5340, core 0 application, core 1 network | see the APPROTECT trap below |
-| `stm32u5` | STM32U575/585 (DEV_ID 0x482), U59x/5Ax (0x481) | TrustZone off only; RDP 1 → 0 unlock |
+| `stm32u5` | STM32U575/585 (DEV_ID 0x482), U59x/5Ax (0x481) | TrustZone off only; internal flash through a streaming RAM loader; RDP 1 → 0 unlock |
 | `generic` | any Cortex-M (registered last; `attach(..., raw=True)` forces it) | memory access, halt, reset; no flash |
 
 Measured on r5 (2026-11-10, dgpio 8 MHz, `host/python/examples/flash_image.py` and `parallel_flash.py`):
 | Target | Whole-flash image | Erase | Program | On-target CRC | Total |
 |---|---|---|---|---|---|
-| nRF5340 app core | 1 MB | 0.2 s (NVMC ERASEALL, UICR kept) | 3.08 s (333 KB/s) | 0.14 s | 3.5 s |
-| STM32U585 | 2 MB random | 0.33 s (bank erase) | 13.3 s (154 KB/s, burst mode) | 3.9 s | 17.6 s |
-| STM32U585 | real 1.2 MB image (.hex, 4 page runs) | page erase | 213 KB/s (blank quad-words skipped) | | 10.2–11.5 s |
+| nRF5340 app core | 1 MB | 0.2 s (NVMC ERASEALL, UICR kept) | 3.08 s (333 KB/s) | 0.14 s | 3.2–3.5 s |
+| nRF5340 network core | 256 KB | fast path (UICR kept) | | | 0.71 s |
+| STM32U585 | 2 MB random | 0.35 s (bank erase) | 6.37 s (322 KB/s) | 0.29 s | 7.0 s |
+| STM32U585 | real 1.2 MB image (.hex, 4 page runs) | page/bank erase | | | 4.2 s |
 
-- **STM32U5:** a quad-word (16 B) programs in about 160 µs and a 128-byte burst in about 640 µs; the flash takes the
-  next burst only when the previous one is done, so programming is flash-bound (voltage range 1 instead of 4
-  made no difference). A RAM loader that overlaps the next burst's transfer could reach about 195 KB/s.
+- **STM32U5 streaming loader** (`loaders/stm32u5/`, built and checked in an emulator by its `build.py`): the probe
+  writes the next 4 KB buffer into SRAM1 while the target's CPU programs the previous one (128-byte bursts, blank
+  quad-words skipped). Before it starts, the module reset-halts the part once and raises the core clock from
+  4 MHz to MSIS 48 MHz (voltage range 1, 4 wait states), mostly for the loader's CRC-32 (2 MB in 0.29 s instead
+  of 3.9 s). Against the probe-driven bursts (154 KB/s, kept as the `ESW_U5_DIRECT` build option) programming went
+  2.1x faster: the flash was never the limit, SWD writes paced by WAIT polling were. Now the probe's SWD/USB link
+  is (about 330 KB/s per channel), and the probe's CPU no longer polls WAIT (2.6 M WAITs per 2 MB before, 94 now).
+- `Esw.flash()` leaves out 0xFF stretches of 256 bytes or more after the erase (`skip_blank`); the CRC still covers
+  the whole range.
 - **nRF5340 APPROTECT trap.** Debug access needs both the UICR branch and a firmware branch that the image's startup
   code (Nordic's `SystemInit` → `nrf53_handle_approtect()`) reopens after every reset. Flash only images that run it:
   any other image (or a half-written one) shuts the port at the next pin reset, and only ERASEALL brings it back.
@@ -75,12 +82,17 @@ Measured on r5 (2026-11-10, dgpio 8 MHz, `host/python/examples/flash_image.py` a
 
 ## Parallel flashing
 `parallel_flash.py --a IMAGE --b IMAGE` flashes both channels one after the other, then from two host threads at
-once. nRF5340 app 1 MB (3.5 s alone) + STM32U585 1.2 MB (10–11.5 s alone):
-| Placement | Sequential | Parallel (wall) | Speed-up (ideal) |
+once. nRF5340 app 1 MB + STM32U585 1.2 MB (.hex):
+| Firmware | Sequential | Parallel (wall) | Speed-up (ideal) |
 |---|---|---|---|
-| firmware 0.3 (one task) | 14.1 s | 14.6 s | 0.96× |
-| STM32 on channel B (core 0) | 14.9 s | 12.5 s | 1.19× (1.31×) |
-| STM32 on channel A's core (core 1), as in production | 14.6 s | **10.8 s** | 1.34× (1.43×) |
+| 0.3 (one task), STM32 probe-driven | 14.1 s | 14.6 s | 0.96× |
+| 0.4, STM32 probe-driven, on channel B (core 0) | 14.9 s | 12.5 s | 1.19× (1.31×) |
+| 0.4, STM32 probe-driven, on core 1 | 14.6 s | 10.8 s | 1.34× (1.43×) |
+| 0.4, STM32 streaming loader, blank stretches skipped | 7.45 s | **5.5 s** | 1.35× (1.75×) |
+
+Both channels are now limited by the USB link, not by SWD or the flash: USB-Serial-JTAG carries at most about
+485 KB/s toward the board (2 KB frames, no SWD), and the two channels together reach about 390 KB/s. A faster
+link (the TinyUSB vendor interface) is the next step for parallel flashing.
 
 ## CRC verify loader
 `TGT_CRC32` computes `zlib.crc32` of target memory on the target, using the built-in loader

@@ -43,6 +43,11 @@ cmake -S . -B build-asan -G Ninja -DESW_SANITIZE=ON && cmake --build build-asan 
    - Multi-core parts: `t->core` holds the requested core (`esw_target_detect_core`); a single-core module returns
      `ESW_ERR_ARG` for any core but 0. `ESW_TARGET_CORE_RAW` skips the chip modules (diagnosis, bring-up).
    - Leave the part as found: undo debug settings in `detach` (e.g. watchdog freeze bits, a released core).
+   - A region served by a RAM loader: the optional `loader_prepare` hook runs before the loader is downloaded
+     (STM32U5: reset-halt once, core clock up). A streaming loader's `program` returns once the data is handed
+     over; `esw_target_sync` waits for it and reports a failed buffer (commands, verify and finish sync first).
+     Loader sources live in `loaders/<name>/`, each with a `build.py` that verifies the blob in an emulator and
+     writes a checked-in `.inc`, so the library build never needs an Arm compiler.
 4. For memories the debugger cannot write directly (for example external OSPI flash), add a region with an
    `esw_loader_desc_t` in `attach`. The common loader runtime then does download, execution and streaming; the module
    writes no transport code.

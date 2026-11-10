@@ -351,9 +351,39 @@ class Esw:
         x = struct.unpack("<6I", self.request(P.SWD_STATS, bytes([ch])))
         return dict(xfers=x[0], wait=x[1], fault=x[2], noack=x[3], parity=x[4], last_op_us=x[5])
 
-    def flash(self, ch, addr, image: bytes, page=None, verify="crc"):
+    @staticmethod
+    def data_segments(image: bytes, gap=256, unit=16):
+        """[(start, end)] byte ranges of image holding data: 0xFF stretches of at least `gap` bytes (in `unit`
+        steps) are left out. Shorter blank stretches stay in, so the number of segments stays small."""
+        n, blank = len(image), b"\xff" * unit
+        segs, cur, blank_run = [], None, 0
+        for b in range((n + unit - 1) // unit):
+            chunk = image[b * unit:(b + 1) * unit]
+            if chunk == blank[:len(chunk)]:
+                blank_run += 1
+                continue
+            if cur is None:
+                cur = [b, b + 1]
+            elif blank_run * unit >= gap:
+                segs.append(cur)
+                cur = [b, b + 1]
+            else:
+                cur[1] = b + 1
+            blank_run = 0
+        if cur:
+            segs.append(cur)
+        return [(a * unit, min(e * unit, n)) for a, e in segs]
+
+    def program_segments(self, ch, addr, image: bytes, segs):
+        """Program only the given (start, end) byte ranges of image, as one pipelined stream."""
+        step = 4 * self.MAX_WORDS
+        self._pipelined(P.TGT_PROGRAM, (struct.pack("<BI", ch, addr + off) + image[off:min(off + step, e)]
+                                        for a, e in segs for off in range(a, e, step)), 30)
+
+    def flash(self, ch, addr, image: bytes, page=None, verify="crc", skip_blank=256):
         """Erase the pages the image touches, program it, verify it (on-target CRC, or read-back). page: erase
-        granularity; default: the sector size of the region reported at attach."""
+        granularity; default: the sector size of the region reported at attach. skip_blank: 0xFF stretches of at
+        least this many bytes are not sent (the erase left them 0xFF; the CRC still covers them); 0 sends all."""
         if page is None:
             page = next((r["sector"] for r in self.regions.get(ch, ())
                          if r["start"] <= addr < r["start"] + r["size"]), 4096)
@@ -362,7 +392,13 @@ class Esw:
         start, end = addr - addr % page, addr + len(image)
         end += (-end) % page
         self.erase(ch, start, end - start)
-        self.program(ch, addr, image)
+        if skip_blank and addr % 16 == 0:   # segments stay quad-word aligned (STM32U5 programs 16 bytes at once)
+            segs = self.data_segments(image, skip_blank)
+            for a, e in segs:   # padded to whole words
+                assert a % 4 == 0
+            self.program_segments(ch, addr, image, [(a, e + (-e) % 4) for a, e in segs])
+        else:
+            self.program(ch, addr, image)
         if verify == "crc":
             got, want = self.crc32(ch, addr, len(image)), zlib.crc32(image)
             if got != want:

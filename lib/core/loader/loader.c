@@ -135,6 +135,7 @@ esw_err_t esw_loader_stream_cmd(esw_loader_t *l, esw_ldr_cmd_t cmd, uint32_t add
 {
     if (!l->streaming)
         return ESW_ERR_STATE;
+    ESW_TRY(esw_loader_stream_flush(l));   /* commands never overtake handed-over buffers */
     uint32_t params[4] = { (uint32_t)cmd, addr, len, arg };
     ESW_TRY(esw_mem_write_block(l->cpu->mem, MB(l, ESW_LDR_MB_CMD), params, 4));
     l->cmd_seq++;
@@ -199,21 +200,32 @@ esw_err_t esw_loader_stream_program(esw_loader_t *l, uint32_t addr, const uint32
         data += n;
         nwords -= n;
     }
-    /* drain: every slot must come back DONE with status 0 */
-    for (uint32_t k = 0; k < l->nbuf; k++) {
-        ESW_TRY(slot_reclaim(l, k, &st));
-        if (st) {
+    return ESW_OK;   /* no drain: the loader keeps programming while the caller fetches the next data */
+}
+
+esw_err_t esw_loader_stream_flush(esw_loader_t *l)
+{
+    if (!l->streaming)
+        return ESW_OK;
+    esw_err_t e = ESW_OK;
+    for (uint32_t k = 0; k < l->nbuf; k++) {   /* reclaim every slot, report the first failure */
+        uint32_t st = 0;
+        esw_err_t r = slot_reclaim(l, k, &st);
+        if (r != ESW_OK)
+            return r;
+        if (st && e == ESW_OK) {
             l->last_status = st;
-            return ESW_ERR_LOADER;
+            e = ESW_ERR_LOADER;
         }
     }
-    return ESW_OK;
+    return e;
 }
 
 esw_err_t esw_loader_stream_stop(esw_loader_t *l)
 {
     if (!l->streaming)
         return ESW_OK;
+    esw_err_t f = esw_loader_stream_flush(l);
     l->streaming = 0;
     uint32_t params[4] = { ESW_LDR_CMD_EXIT, 0, 0, 0 };
     ESW_TRY(esw_mem_write_block(l->cpu->mem, MB(l, ESW_LDR_MB_CMD), params, 4));
@@ -223,5 +235,5 @@ esw_err_t esw_loader_stream_stop(esw_loader_t *l)
     esw_err_t g = guard(l, 0);
     if (e == ESW_ERR_TIMEOUT)
         e = ESW_OK;   /* halted by wait_halt: the loader did not exit by itself, but the core is stopped */
-    return e != ESW_OK ? e : g;
+    return f != ESW_OK ? f : e != ESW_OK ? e : g;
 }

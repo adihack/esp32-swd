@@ -260,8 +260,10 @@ firmware/bringup, firmware/poc_swd   (MicroPython bring-up and board test; kept 
    - loader manager with the streaming ABI and SDK, plus the FLM path;
    - STM32U5 internal flash and external flash via loader;
    - optional CMSIS-DAP v2.
-   - Done 2026-11-10: STM32U5 internal flash (TrustZone off; burst programming, RDP unlock), file flashing tool
-     (`flash_image.py`, .hex/.bin). Still open: TrustZone on, external flash via loader, CMSIS-DAP.
+   - Done 2026-11-10: STM32U5 internal flash (TrustZone off; RDP unlock) through the first streaming-ABI loader on
+     hardware (`loaders/stm32u5`, 322 KB/s, link-bound); module hook `loader_prepare` (reset-halt, faster core
+     clock); `stream_program` returns once the data is handed over (`esw_target_sync` collects the status); file
+     flashing tool (`flash_image.py`, .hex/.bin). Still open: TrustZone on, external flash via loader, CMSIS-DAP.
 6. **M5:** nRF5340 (app and net cores), parallel channels, soak rig and the 14-day run.
    - Done 2026-11-10: nRF5340 module (both cores), parallel channels (one SWD worker per channel and core, protocol 4
      per-channel queues). Still open: soak rig and the 14-day run.

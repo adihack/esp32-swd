@@ -50,6 +50,8 @@ static esw_err_t loader_for(esw_target_t *t, const esw_mem_region_t *r)
     if (t->loader_active == r->loader && t->loader.loaded)
         return ESW_OK;
     ESW_TRY(esw_target_finish(t));
+    if (t->drv->loader_prepare)
+        ESW_TRY(t->drv->loader_prepare(t, r));
     ESW_TRY(esw_loader_load(&t->loader, &t->cpu, t->clk, r->loader));
     t->loader_active = r->loader;
     if (r->loader->fn_init) {
@@ -61,6 +63,11 @@ static esw_err_t loader_for(esw_target_t *t, const esw_mem_region_t *r)
     if (r->use_stream)
         ESW_TRY(esw_loader_stream_start(&t->loader));
     return ESW_OK;
+}
+
+esw_err_t esw_target_sync(esw_target_t *t)
+{
+    return (t->loader_active && t->loader.streaming) ? esw_loader_stream_flush(&t->loader) : ESW_OK;
 }
 
 esw_err_t esw_target_finish(esw_target_t *t)
@@ -85,8 +92,16 @@ esw_err_t esw_target_erase(esw_target_t *t, uint32_t addr, uint32_t len)
     if (!r->loader)
         return t->drv->erase ? t->drv->erase(t, r, addr, len) : ESW_ERR_UNSUPPORTED;
     ESW_TRY(loader_for(t, r));
-    if (r->use_stream)
+    if (r->use_stream) {
+        if (r->sector_size) {   /* whole sectors, as the direct and call-ABI paths erase */
+            const uint32_t a0 = addr - (addr - r->start) % r->sector_size;
+            uint32_t end = addr + len - r->start;
+            end += (r->sector_size - end % r->sector_size) % r->sector_size;
+            addr = a0;
+            len = r->start + end - a0;
+        }
         return esw_loader_stream_cmd(&t->loader, ESW_LDR_CMD_ERASE, addr, len, 0, r->loader->timeout_erase_ms, NULL);
+    }
     if (!r->loader->fn_erase_sector || !r->sector_size)
         return ESW_ERR_UNSUPPORTED;
     for (uint32_t a = addr - (addr - r->start) % r->sector_size; a < addr + len; a += r->sector_size) {
