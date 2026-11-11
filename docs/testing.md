@@ -37,28 +37,31 @@ esw info                          # firmware: esp-swd 0.5.0 r5/usj (protocol 5)
 `uart_loopback.py` needs the channels' UARTs free: stop the daemon, or `esw tty AB off` while it runs (`esw tty AB
 open` afterwards).
 
-## 4. Bench of 2026-11-11: nRF5340 on A, STM32U585 on B, UART headers cross-cabled
+## 4. Bench of 2026-11-12: nRF5340 on A, STM32U585 on B
 Wiring:
 - J301 → nRF5340 DUT (10-pin Cortex debug cable); J401 → STM32U585 board. Each DUT powers its own VTref.
-- J302.2 (A TX) → J402.3 (B RX) and J402.2 (B TX) → J302.3 (A RX). GND is common on the r5 board. **Never join the
-  two pin 4s:** they are the two DUT supplies.
+- UART, either of:
+  - **DUT consoles** (current): J30x.2 (tool TX) → DUT RX, J30x.3 (tool RX) ← DUT TX, GND common. Both DUTs run
+    Zephyr with its console at 115200 8N1.
+  - **Cross-cabled** (throughput tests): J302.2 (A TX) → J402.3 (B RX) and J402.2 (B TX) → J302.3 (A RX). GND is
+    common on the r5 board. **Never join the two pin 4s:** they are the two DUT supplies.
 - Check first with `esw info`: after any SWD or UART use, VTref should read about 3.27 V on both channels. About
   2.7 V means a rotated 10-pin cable (pin 1 on the DUT's nRESET pull-up); the interlock then refuses, correctly.
 
 | Test | Command | Last result |
 |---|---|---|
 | Identify both targets | `.venv/bin/python host/python/examples/flash_image.py --info --channel A` (and `B`) | `nRF5340-QKAA app`; `STM32U5 482 2048K` with its memory map |
-| Real UART pads, both directions at once | `esw serve &`, then `.venv/bin/python host/python/examples/tty_loopback.py --cross --baud 1000000` | byte-exact at 115200, 460800, 1 M and 2 Mbaud; 97 KB/s each way at 1 Mbaud |
-| Parity through the daemon | `esw serve --format-a 8E1 --format-b 8E1 &`, then `tty_loopback.py --cross` | byte-exact, 83 KB/s each way (11 bits per byte) |
-| Shell tools | `stty -F <ttyA> 115200 raw -echo`; `cat <ttyB> &`; `echo hello > <ttyA>` | `hello` arrives on B |
-| Switch modes on real pads | with ttyA/ttyB open: `esw mode B uart off` → nothing passes either way, B's writes are counted as dropped in `esw info`; `esw mode B uart auto` → data flows again | as described |
+| DUT consoles (console wiring) | `esw serve &`; `picocom -b 115200 <ttyA>` (or a pyserial reader on both); `esw reset A`, `esw reset B` | 2026-11-12: nRF5340 12.4 KB and STM32 9.7 KB of Zephyr boot log, 0 framing errors. TX/RX swapped looks like 0 bytes **and** 0 framing errors |
+| Real UART pads, both directions at once (cross-cabled) | `esw serve &`, then `.venv/bin/python host/python/examples/tty_loopback.py --cross --baud 1000000` | byte-exact at 115200, 460800, 1 M and 2 Mbaud; 97 KB/s each way at 1 Mbaud |
+| Parity through the daemon (cross-cabled) | `esw serve --format-a 8E1 --format-b 8E1 &`, then `tty_loopback.py --cross` | byte-exact, 83 KB/s each way (11 bits per byte) |
+| Shell tools (cross-cabled) | `stty -F <ttyA> 115200 raw -echo`; `cat <ttyB> &`; `echo hello > <ttyA>` | `hello` arrives on B |
+| Switch modes on real pads (cross-cabled) | with ttyA/ttyB open: `esw mode B uart off` → nothing passes either way, B's writes are counted as dropped in `esw info`; `esw mode B uart auto` → data flows again | as described |
 | Both DUTs at once | `esw flash A=<nrf5340 app image> B=<stm32 image>` | 5.66 s, both CRC-verified (one after the other: 3.7 s + 4.9 s) |
 | Benchmark, sequential vs parallel | `.venv/bin/python host/python/examples/parallel_flash.py --a <nrf5340 image> --b <stm32 image>` | sequential 7.45 s, parallel 5.52 s (same with and without the daemon) |
-| Everything at once | `tty_loopback.py --cross --seconds 20` in the background, `esw flash A=... B=...` meanwhile | 2 MB each way, 0 line/overflow errors (`Esw().uart_stats(ch)`); the flash verified in 11.5 s (the UARTs keep their rate) |
+| Everything at once (cross-cabled) | `tty_loopback.py --cross --seconds 20` in the background, `esw flash A=... B=...` meanwhile | 2 MB each way, 0 line/overflow errors (`Esw().uart_stats(ch)`); the flash verified in 11.5 s (the UARTs keep their rate) |
 | Ownership | a script holding channel B (`Esw().connect(1)` and sleeping), then `esw flash B=...` | refused: "channel B SWD is in use by another program"; after `kill -9` of the script the daemon detaches and releases B |
 
-Images: the DUTs' own firmware from their backups (kept outside the repository). **nRF5340: only images that run
-Nordic's startup code**; a random or half-written image shuts the debug port at the next reset (see `app/README.md`,
+Images: firmware made for each DUT. **nRF5340: only images that run Nordic's startup code**; a random or half-written image shuts the debug port at the next reset (see `app/README.md`,
 "nRF5340 APPROTECT trap").
 
 ## 5. nRF52840 DK on channel A (not yet re-run on firmware 0.5.0)
@@ -74,7 +77,7 @@ section 12). They are the next regression to run.
 | UART stress | as the UART test, plus channel B: J402.2 ↔ J402.3, J402.1 → DK GND, J402.4 → DK VDD | `uart_stress.py --duration 30` | 0 errors, 0 overflows on both channels |
 | Robustness | J301 → DK; **daemon stopped** (`esw stop`) | `robustness_check.py [port]` | 14/14 (2026-11-09): reset-halt, panic with SWD closed, host loss mid-session, REBOOT, CRC catches a corrupted word |
 
-The cross-cabled UART headers of section 4 conflict with this wiring: re-cable channel A to the DK first.
+The UART wiring of section 4 conflicts with this one: re-cable channel A to the DK first.
 
 ## 6. What a release needs to pass
 1. Section 1 (CI does it).

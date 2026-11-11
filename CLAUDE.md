@@ -41,8 +41,7 @@ the product requirements; `host/python/README.md` is the user guide for the `esw
 
     Bench-test this path with the GPIO0 short at hand before any OTG image is deployed.
   - Last resort: short module pad 27 (GPIO0) to GND while plugging in USB.
-- **DUT firmware is the user's:** back up a DUT's flash (and UICR/option bytes) before any write, ask first, and
-  restore it afterwards.
+- **DUT firmware is the user's:** ask before writing a DUT's flash, UICR or option bytes.
 - **nRF5340:** flash only images that run Nordic's startup code. Its debug port has a firmware APPROTECT branch that
   closes at every reset until `SystemInit` reopens it; a random or half-written image locks the debugger out at the
   next pin reset (detach pulses nRESET). Recovery is CTRL-AP ERASEALL (`unlock` with allow-erase), which also wipes
@@ -98,17 +97,18 @@ rule, optional Arm toolchain). Gotchas:
   and `PROTO_VERSION` (`host/python/esw/proto.py`); bump `FW_NAME` (`app/main/main.c`) and the host package version
   (`host/python/pyproject.toml`) with it.
 - **Git:** commit only when the user asks. Remote: `https://github.com/adihack/esp32-swd` (public, MIT).
-  - Never commit vendor datasheets, vendor 3D models (gitignored) or DUT firmware backups; new source files get an
+  - Never commit vendor datasheets, vendor 3D models (gitignored) or DUT firmware images; new source files get an
     `SPDX-License-Identifier: MIT` header.
 
-## Bench as of 2026-11-11 (original PC)
+## Bench as of 2026-11-12 (original PC)
 - **Board 2** (MAC f0:f5:bd:57:ef:34, board id `F0F5BD57EF34`) runs esp-swd **0.5.0** (protocol 5). Board 1
   (…ef:48) had its USB D− re-soldered and holds no esp-swd firmware yet.
 - **Channel A (J301):** the user's nRF5340 product DUT. **Channel B (J401):** a separate STM32U585 board (RDP 0,
-  TrustZone off). The user declared both test-only (2026-11-11); still back up before writing.
-- **UART:** J302 and J402 cross-cabled (J302.2 → J402.3, J402.2 → J302.3). GND is common on the board; never join
-  the two pin 4s: they are the two DUT supplies. Test: `esw serve` + `examples/tty_loopback.py --cross`.
+  TrustZone off). The user declared both test-only (2026-11-11). Both run Zephyr.
+- **UART:** J302 and J402 are wired to the two DUTs' consoles (Zephyr, 115200 8N1): J30x.2 (tool TX) → DUT RX,
+  J30x.3 (tool RX) ← DUT TX, GND common. Check: `esw serve`, open ttyA/ttyB at 115200, `esw reset A` (or `B`) →
+  boot log. TX/RX swapped shows as 0 bytes **and** 0 framing errors (the RX line never moves).
+  - For throughput tests without DUT traffic the headers can be cross-cabled instead (J302.2 → J402.3,
+    J402.2 → J302.3; never join the two pin 4s: they are the two DUT supplies): `examples/tty_loopback.py --cross`.
 - **nRF52840 DK:** not connected. The DK-based tests (`uart_test.py`, `uart_stress.py`, `robustness_check.py`,
   `nrf52_blinky.py`, `flash_speed.py`) have not run on firmware 0.5.0; see `docs/testing.md`.
-- **DUT backups** live outside the repository (product firmware, never commit): on the original PC in
-  `~/development/esp-swd-dut-backups/`, with a README of files, CRCs and restore commands.

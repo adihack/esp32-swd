@@ -16,7 +16,7 @@ and their last results: `docs/testing.md`. Using the tools: `host/python/README.
 | Two UARTs, up to 1 Mbaud each (not necessarily while flashing at full speed) | DMA back-end on one channel, hardened interrupt back-end on the other | real pads, A ↔ B: byte-exact both ways at once up to 2 Mbaud; 1 Mbaud also during a dual flash |
 | Isolation control: semi-automatic and direct from Python | interlock + holders; switch modes `auto`/`on`/`off` (`esw mode`, `Esw.mode`) | all modes checked on real pads |
 | Firmware update | `esw update` = esptool over USB-Serial-JTAG (the peripheral resets into the ROM downloader in hardware) | done repeatedly, also through the running daemon |
-| Two TTY endpoints for standard tools | `esw serve`: PTYs `ttyA`/`ttyB` | pyserial, stty/cat/echo, socat; baud from the program |
+| Two TTY endpoints for standard tools | `esw serve`: PTYs `ttyA`/`ttyB` | both DUTs' Zephyr consoles at 115200, boot logs after `esw reset`; pyserial, stty/cat/echo, socat; baud from the program |
 | Custom Python tool for flashing | `esw` CLI and the `esw.Esw` library | used for every test above |
 
 - **Target modules:** nRF52 (DK-tested), nRF5340 application and network core, STM32U575/585 (internal flash,
@@ -32,8 +32,7 @@ and their last results: `docs/testing.md`. Using the tools: `host/python/README.
   without VTref inside 2.8–3.6 V. Every boot starts isolated. Host loss (3 s + 2 s) releases host holds.
 - **One owner per channel resource** in the daemon: SWD, and UART (stream + group hold together). The TTY bridge
   owns a UART unless its policy is `off`.
-- **DUT firmware belongs to the user:** back up before any write, ask first, restore afterwards. Backups never go
-  into the repository.
+- **DUT firmware belongs to the user:** ask before writing to a DUT; DUT firmware never goes into the repository.
 
 ## Known limitations and risks
 - **Link bandwidth:** parallel flashing and UART traffic share USB-Serial-JTAG. With both UARTs at 1 Mbaud full
@@ -48,8 +47,8 @@ and their last results: `docs/testing.md`. Using the tools: `host/python/README.
   the ring overflow. A frame is then lost: the daemon notices it within a second and fails that request. This was
   flagged in the 2026-11-11 review and has not been reproduced.
 - **nRF5340:** only images with Nordic's startup code. A random or half-written image locks the debugger; recovery
-  is ERASEALL, which also wipes the KMU keys. The DUT's firmware rewrites flash page 0xED000 at run time (settings),
-  so its backups age.
+  is ERASEALL, which also wipes the KMU keys. The DUT's firmware rewrites flash page 0xED000 at run time (its
+  monotonic counters), so a CRC of its flash changes over time.
 - **Not supported yet:** STM32U5 with TrustZone on, external-flash loaders, SWO, a soak of more than an hour.
 
 ## Next steps (suggested order)
