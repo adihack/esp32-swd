@@ -17,10 +17,16 @@ import time
 import zlib
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from esw import Esw, EswError, proto as P  # noqa: E402
+from esw import Esw, EswError, link, proto as P  # noqa: E402
 from nrf52_blinky import BLINKY  # noqa: E402
 
-PORT, CH = "/dev/ttyACM0", 0   # direct link only: stop `esw serve` first (it tests host loss on the port)
+# optional argument: the board's port (device path or board id); default: the only board attached.
+# Direct link only: host loss is tested on the port itself, so `esw serve` must be stopped (`esw stop`).
+PORT, CH = (sys.argv[1] if len(sys.argv) > 1 else None), 0
+_kind, _where = link.resolve(PORT)
+if _kind != "serial":
+    sys.exit("a daemon serves this board (%s): stop it first with `esw stop`" % _where)
+PORT = _where
 DHCSR, P0_OUT = 0xE000EDF0, 0x50000504
 RESULTS = []
 

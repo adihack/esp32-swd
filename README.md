@@ -24,7 +24,8 @@ Firmware 0.5.0 (protocol 5) with the `esw` host tools covers the first usable sc
 - **Firmware update over USB:** `esw update`, esptool through the chip's USB-Serial-JTAG. No buttons, and it
   recovers even a hung firmware.
 
-Usage: **`host/python/README.md`**. Everything below is tested on hardware.
+Usage: **`host/python/README.md`**. State, open items and next steps: **`docs/status.md`**. Hardware tests:
+**`docs/testing.md`**. Everything below is tested on hardware.
 
 Earlier results (board r5, channel A, nRF52840 DK):
 - **Isolation interlock:** VTref is checked before any signal switch closes. The switches reopen on VTref loss, host
@@ -72,6 +73,7 @@ ESP32-S3-WROOM-1-**N4** modules (4 MB flash, no PSRAM), not the N16 in the BOM.
 | `loaders/` | Target-side loader sources; `crc32/build.py` (built-in CRC loader) and `stm32u5/build.py` (STM32U5 streaming flash loader) rebuild and verify them in an emulator |
 | `testfw/` | Bare-metal test firmware for DUTs, e.g. `nrf52840_uart/` for the UART hardware test |
 | `tests/` | Host unit tests against a bit-level SWD target simulator (`tests/sim/`); CI in `.github/workflows/ci.yml` |
+| `docs/status.md`, `docs/testing.md` | **Start here for a new session:** status, decisions, next steps; every test with wiring and last results |
 | `docs/hardware-reference.md` | **Start here for hardware.** Pin map, signal chains, polarities, connectors, test pads, interlock rules, boot notes, bring-up results |
 | `docs/firmware-architecture.md` | Firmware architecture, reliability plan, milestones, decisions |
 | `docs/hardware/` | Design brief, hardware architecture history, PCB layout notes |
@@ -79,42 +81,59 @@ ESP32-S3-WROOM-1-**N4** modules (4 MB flash, no PSRAM), not the N16 in the BOM.
 | `hardware/rev5/` | r5 schematic PDF, KiCad 10 project as built, the exact JLCPCB production package |
 | `firmware/bringup/`, `firmware/poc_swd/` | MicroPython bring-up blink and the first SWD board test (kept for reference) |
 
+## New machine
+Linux (Ubuntu or similar), Python ≥ 3.9. From a fresh clone:
+```
+git clone https://github.com/adihack/esp32-swd.git && cd esp32-swd
+
+# 1. Python venv: build tools, host tools (`esw`), esptool; unicorn/capstone only for rebuilding loaders
+python3 -m venv .venv
+.venv/bin/pip install cmake ninja pyserial esptool unicorn capstone
+.venv/bin/pip install -e host/python
+
+# 2. USB access without sudo, no ModemManager probing (then re-plug the board)
+sudo cp host/udev/60-esp-swd.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+
+# 3. Library tests (no hardware)
+PATH=$PWD/.venv/bin:$PATH cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build
+.venv/bin/python -m unittest discover -s host/python/tests
+
+# 4. Firmware: ESP-IDF v6.0.3 (about 5 GB with tools)
+git clone -b v6.0.3 --recursive https://github.com/espressif/esp-idf.git ~/esp/esp-idf-v6.0.3
+~/esp/esp-idf-v6.0.3/install.sh esp32s3
+. ~/esp/esp-idf-v6.0.3/export.sh && export PATH="$PATH:$PWD/.venv/bin"   # append the venv, never prepend
+(cd app && idf.py build)
+.venv/bin/esw update app/build          # or: cd app && idf.py -p /dev/ttyACM0 flash
+.venv/bin/esw info
+```
+- No buttons are needed: USB-Serial-JTAG resets the chip into the ROM downloader in hardware. The board
+  enumerates as `303a:1001`.
+- Optional: the Arm GNU toolchain (15.3.rel2, from developer.arm.com, unpacked to
+  `~/arm/arm-gnu-toolchain-15.3.rel2-x86_64-arm-none-eabi`, or set `ARM_GCC_BIN`). Needed only to rebuild the
+  target-side loaders (`loaders/*/build.py`) and the DUT test firmware (`testfw/`, used by `uart_test.py`).
+
+**Where to go next:** `docs/status.md` (where the project stands, what is next), `docs/testing.md` (every hardware
+test with wiring and expected results), `host/python/README.md` (using `esw`).
+
 ## Quick start
-Library and tests on a PC:
 ```
-python3 -m venv .venv && .venv/bin/pip install cmake ninja pyserial
-PATH=$PWD/.venv/bin:$PATH
-cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build --output-on-failure
-```
-
-Firmware (ESP-IDF v6.0.3); no buttons are needed, USB-Serial-JTAG resets the chip into the ROM downloader:
-```
-. ~/esp/esp-idf-v6.0.3/export.sh
-export PATH="$PATH:$PWD/.venv/bin"
-cd app && idf.py build && idf.py -p /dev/ttyACM0 flash
-```
-
-Host tools (the board enumerates as `303a:1001`, `/dev/ttyACM0`); full guide in `host/python/README.md`:
-```
-.venv/bin/pip install -e host/python esptool       # the `esw` command
 esw serve &                                         # TTYs: $XDG_RUNTIME_DIR/esp-swd/<board>/ttyA, ttyB
 esw info                                            # channels, switches, modes, TTYs
-esw flash A=app.hex B=stm32.hex                     # both channels at once
+esw flash A=app.hex B=stm32.hex                     # both channels at once, CRC-verified
+esw flash A1=net.hex                                # nRF5340 network core
 esw mode B uart off                                 # isolation switch modes: auto | on | off
 esw update app/build                                # board firmware over USB
+esw stop                                            # stop the daemon
 ```
-Examples (they also run through the daemon):
+Examples (they also run through the daemon; wiring and expected results in `docs/testing.md`):
 ```
-.venv/bin/python host/python/examples/nrf52_blinky.py --channel A          # attach, flash a test image, watch it run
-.venv/bin/python host/python/examples/flash_speed.py --size 1M --window 3 --verify crc
-.venv/bin/python host/python/examples/uart_test.py                          # UART: wiring in its docstring
 .venv/bin/python host/python/examples/flash_image.py --info --channel B      # identify a target, print its memory map
-.venv/bin/python host/python/examples/flash_image.py --channel B build/app.hex   # .hex or .bin (--addr), CRC-verified
-.venv/bin/python host/python/examples/parallel_flash.py --a app_a.hex --b app_b.hex   # both channels at once
+.venv/bin/python host/python/examples/parallel_flash.py --a app_a.hex --b app_b.hex   # benchmark, both channels
+.venv/bin/python host/python/examples/tty_loopback.py --cross               # UART A <-> B through the TTYs
+.venv/bin/python host/python/examples/nrf52_blinky.py --channel A          # nRF52840 DK: flash and watch it run
 ```
-nRF5340: `--core 1` selects the network core. Flash only images with Nordic's startup code (see `app/README.md`,
-"nRF5340 APPROTECT trap").
-`nrf52_blinky.py --allow-erase` mass-erases a locked (APPROTECT) chip. Without it, a locked chip is left alone.
+nRF5340: flash only images with Nordic's startup code (see `app/README.md`, "nRF5340 APPROTECT trap").
+`--allow-erase` mass-erases a locked chip; without it, a locked chip is left alone.
 
 ## Hardware in one screen
 | Function | Channel A | Channel B |
