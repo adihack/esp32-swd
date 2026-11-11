@@ -48,6 +48,11 @@ requirements.
   Never lower the 2.8 V threshold to "fix" it.
 - **Channels run in parallel**, one worker per CPU core (A on core 1, B on core 0). Anything that issues SWD packets
   for a channel must run in that channel's worker.
+- **Switch modes** (protocol 5): `auto` / `on` (host pin holder) / `off` (inhibit). No mode bypasses the VTref
+  interlock; keep it that way.
+- **USB stays on USB-Serial-JTAG for now** (user decision 2026-11-11, MVP): it keeps esptool's hardware reset into
+  the ROM downloader, so `esw update` recovers even a hung firmware. TTYs come from the host daemon (PTYs), not
+  from USB CDC.
 - **Flash size:** the fitted modules are ESP32-S3-WROOM-1-N4 (4 MB flash, no PSRAM). Never assume PSRAM.
   - Do not use octal-PSRAM sdkconfig options: GPIO35 is B_UART_RX.
 
@@ -73,7 +78,10 @@ requirements.
   - The DK now holds the 64-byte LED-chase test image.
 - **Arm GNU toolchain:** 15.3.rel2 in `~/arm/arm-gnu-toolchain-15.3.rel2-x86_64-arm-none-eabi` (1.1 GB). It is needed
   only to rebuild target-side loaders (`loaders/crc32/build.py`); the library includes the generated `.inc`.
-- **UART test wiring (channel A):** J302.1 GND → DK GND, J302.2 TX → DK P1.01 (D0), J302.3 RX → DK P1.02 (D1),
+- **UART wiring as of 2026-11-11:** J302 and J402 cross-cabled (J302.2 → J402.3, J402.2 → J302.3; GND is common on
+  the board, never join the two pin 4s: they are the two DUT supplies). Test: `esw serve` +
+  `host/python/examples/tty_loopback.py --cross`.
+- **UART test wiring (channel A, DK era):** J302.1 GND → DK GND, J302.2 TX → DK P1.01 (D0), J302.3 RX → DK P1.02 (D1),
   J302.4 open. Test: `host/python/examples/uart_test.py` (flashes `testfw/nrf52840_uart`, needs `~/arm`).
   - UART TX must stay at the weakest drive strength with the RX glitch filter on (crosstalk into our RX, measured).
   - Never use `usb_serial_jtag_is_connected()` to decide anything quickly: it reports false disconnects under load.
@@ -83,6 +91,16 @@ requirements.
 - **Library build and tests (host):** `PATH=$PWD/.venv/bin:$PATH cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build`.
   - Also run with `-DESW_SANITIZE=ON` (ASan/UBSan).
   - `lib/` must stay portable: C11, no RTOS, no vendor headers, no malloc, `-Wconversion -Werror` clean.
+- **Host tools:** `.venv/bin/pip install -e host/python` gives `.venv/bin/esw` (CLI); `esw serve` is the daemon
+  (TTYs + socket at `$XDG_RUNTIME_DIR/esp-swd/<board>/`). While it runs, it holds the port exclusively and
+  `Esw()` goes through it; `examples/robustness_check.py` needs it stopped.
+  - Stop it with `esw stop`. Never `pkill -f`/`pgrep -f` with a pattern that also appears in the same shell
+    command: it matches its own shell and kills the command.
+  - `esw serve --test-loopback` + `examples/tty_loopback.py`, and `examples/uart_loopback.py`, test both UARTs at
+    1 Mbaud with no DUT and no wiring (internal loopback).
+  - Python 3.14 maps `termios.Bxxx` to plain numbers: read PTY speeds from `struct termios2.c_ospeed` (TCGETS2),
+    not from the Bxxx bits. Linux PTYs drop PARENB, so parity is a daemon setting (`--format-a 8E1`).
+  - USB-Serial-JTAG does not re-enumerate on `esp_restart()`: a host sees no disconnect after REBOOT or a panic.
 - **Git:** commit only when the user asks. Remote: `https://github.com/adihack/esp32-swd` (public, MIT).
   - Never commit vendor datasheets or vendor 3D models (gitignored); new source files get an
     `SPDX-License-Identifier: MIT` header.

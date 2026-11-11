@@ -18,17 +18,11 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from esw import Esw, proto as P  # noqa: E402
-from flash_image import read_hex, page_runs  # noqa: E402
+from esw import image  # noqa: E402
 
 
 def load(path, addr, regions):
-    if path.lower().endswith((".hex", ".ihex")):
-        mem = read_hex(path)
-    else:
-        data = open(path, "rb").read()
-        base = addr if addr is not None else next(r["start"] for r in regions if r["kind"] == "flash")
-        mem = {base + i: b for i, b in enumerate(data)}
-    return page_runs(mem, regions)
+    return image.page_runs(image.load(path, regions, addr), regions)
 
 
 def flash_channel(d, ch, core, runs, clock, out):
@@ -48,7 +42,7 @@ def flash_channel(d, ch, core, runs, clock, out):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", default="/dev/ttyACM0")
+    ap.add_argument("--port", help="device, board id or unix:<socket>; default: the only board (through esw serve if it runs)")
     for c in "ab":
         ap.add_argument("--" + c, required=True, metavar="IMAGE")
         ap.add_argument("--%s-core" % c, type=int, default=0)

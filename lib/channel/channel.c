@@ -40,6 +40,22 @@ esw_err_t esw_channel_release(esw_channel_t *c, esw_group_t g, uint32_t holder)
     return ESW_OK;
 }
 
+esw_err_t esw_channel_inhibit(esw_channel_t *c, esw_group_t g, uint32_t on)
+{
+    if (g == ESW_GROUP_VTREF || (unsigned)g >= ESW_GROUP_COUNT)
+        return ESW_ERR_ARG;
+    if (on)
+        c->inhibit |= 1u << g;
+    else
+        c->inhibit &= ~(1u << g);
+    return ESW_OK;
+}
+
+static uint32_t wants(const esw_channel_t *c, uint32_t g)
+{
+    return c->holders[g] != 0 && !(c->inhibit & (1u << g));
+}
+
 void esw_channel_set_host_present(esw_channel_t *c, uint32_t present, uint32_t now_ms)
 {
     if (present) {
@@ -70,8 +86,8 @@ void esw_channel_tick(esw_channel_t *c, uint32_t now_ms)
         emit(c, ESW_EV_HOST_LOST, ESW_GROUP_VTREF, ESW_WHY_HOST_LOSS);
     }
 
-    /* 2. VTref sensing follows the holders */
-    uint32_t need = c->holders[ESW_GROUP_SWD] | c->holders[ESW_GROUP_UART];
+    /* 2. VTref sensing follows the groups that want to close */
+    uint32_t need = wants(c, ESW_GROUP_SWD) | wants(c, ESW_GROUP_UART);
     if (need && !c->vtref_closed) {
         c->ops->set_switch(c->ctx, ESW_GROUP_VTREF, 1);
         c->vtref_closed = 1;
@@ -90,12 +106,13 @@ void esw_channel_tick(esw_channel_t *c, uint32_t now_ms)
 
     /* 3. signal groups: close only with a holder and a valid VTref; open at once otherwise */
     for (uint32_t g = ESW_GROUP_SWD; g < ESW_GROUP_COUNT; g++) {
-        uint32_t want = c->holders[g] != 0;
+        uint32_t want = wants(c, g);
         uint32_t powered = c->vtref_valid && c->vtref_ok;
         if (c->gstate[g] == ESW_GSTATE_CLOSED) {
             if (!want)
-                open_group(c, (esw_group_t)g, c->host_loss_done && !c->host_present ? ESW_WHY_HOST_LOSS
-                                                                                     : ESW_WHY_HOLDER);
+                open_group(c, (esw_group_t)g, (c->inhibit & (1u << g)) ? ESW_WHY_FORCED
+                                              : c->host_loss_done && !c->host_present ? ESW_WHY_HOST_LOSS
+                                                                                      : ESW_WHY_HOLDER);
             else if (!powered) {
                 open_group(c, (esw_group_t)g, ESW_WHY_VTREF);
                 c->gstate[g] = ESW_GSTATE_WAIT_VTREF;

@@ -1,0 +1,16 @@
+# esp-swd daemon as a systemd user service: TTY bridge + shared access, restarted if it exits.
+#   mkdir -p ~/.config/systemd/user && cp host/systemd/esw.service ~/.config/systemd/user/
+#   # edit ExecStart if esw is not in ~/.local/bin (e.g. <repo>/.venv/bin/esw)
+#   systemctl --user daemon-reload && systemctl --user enable --now esw
+#   journalctl --user -u esw -f
+# One board per instance; with several boards, copy it per board and add --port <board id> to ExecStart.
+[Unit]
+Description=esp-swd daemon (DUT UART TTYs, shared board access)
+
+[Service]
+ExecStart=%h/.local/bin/esw serve
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

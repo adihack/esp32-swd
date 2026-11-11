@@ -97,7 +97,7 @@ class Dut:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", default="/dev/ttyACM0")
+    ap.add_argument("--port", help="device, board id or unix:<socket>; default: the only board (through esw serve if it runs)")
     ap.add_argument("--channel", default="A", choices="AB")
     ap.add_argument("--bauds", default="115200,460800,1000000")
     ap.add_argument("--stream", type=size_arg, default=1 << 20, help="DK -> tool stream size (default 1M)")

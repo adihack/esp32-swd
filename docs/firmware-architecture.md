@@ -85,6 +85,14 @@ channel isolates.
 
 Every state change is an event on the event stream, with a reason (holder change, VTref lost, host loss, error).
 
+**Modes (protocol 5, 2026-11-11).** On top of the holders, the host gives each signal group a standing order:
+- `auto` (default after boot): closed while held;
+- `on`: held by the host itself (`ESW_HOLD_HOST_PIN`), so closed whenever VTref is valid; dropped on host loss like
+  every host holder;
+- `off`: inhibited (`esw_channel_inhibit`), never closed whatever holds it; survives host loss.
+
+The interlock (VTref first, voltage window) applies in every mode. User guide: `host/python/README.md`.
+
 ## 3. Host link (USB)
 **Vendor interface (always present).**
 - It is the management path and the fast data path: WinUSB/libusb bulk, with MS OS 2.0 descriptors so Windows needs
@@ -96,6 +104,10 @@ Every state change is an event on the event stream, with a reason (holder change
   - `job`: programming and loader jobs, plus image upload.
 - The Python library exposes each UART as a **PTY** (e.g. `/dev/esp-swd/<serial>/uartA`), so picocom and log scripts
   work unchanged.
+  - Done 2026-11-11 on USB-Serial-JTAG, without TinyUSB: the host daemon `esw serve` (`host/python/esw/server.py`)
+    owns the port and serves PTYs (`$XDG_RUNTIME_DIR/esp-swd/<board>/ttyA|ttyB`) plus a socket that other
+    programs share. Both UARTs at 1 Mbaud full duplex through the PTYs at once: 97 KB/s each way per channel,
+    byte-exact.
 
 **Optional interfaces.** Each can be enabled or disabled from the host. The setting is persisted in NVS and applied
 by a USB soft re-attach, so the PC re-enumerates and no replug is needed.
@@ -254,8 +266,10 @@ firmware/bringup, firmware/poc_swd   (MicroPython bring-up and board test; kept 
 3. **M2:** fast SWD PHY (benchmark both options), nRF52840 program and verify via Python, measured against
    10.7 s/MB.
 4. **M3:** UART streams with DMA, timestamps, PTY bridges (sniffing). Optional CDC-ACM.
-   - Done early, on USB-Serial-JTAG: streams with timestamps, interrupt-driven (no DMA). Still open: PTY bridges and
-     CDC-ACM.
+   - Done early, on USB-Serial-JTAG: streams with timestamps; DMA back-end (one UHCI) and hardened interrupt back-end
+     (2026-11-09).
+   - Done 2026-11-11: PTY bridges in the host daemon (`esw serve`), both channels at 1 Mbaud full duplex at once,
+     byte-exact; 2 Mbaud also clean. CDC-ACM stays open (needs USB-OTG).
 5. **M4:**
    - loader manager with the streaming ABI and SDK, plus the FLM path;
    - STM32U5 internal flash and external flash via loader;
@@ -267,6 +281,18 @@ firmware/bringup, firmware/poc_swd   (MicroPython bring-up and board test; kept 
 6. **M5:** nRF5340 (app and net cores), parallel channels, soak rig and the 14-day run.
    - Done 2026-11-10: nRF5340 module (both cores), parallel channels (one SWD worker per channel and core, protocol 4
      per-channel queues). Still open: soak rig and the 14-day run.
+
+**MVP (2026-11-11, firmware 0.5.0, protocol 5).** The user's scope for a first usable tool, all on USB-Serial-JTAG:
+- double SWD, two DUTs flashed at once (`esw flash A=... B=...`);
+- double UART up to 1 Mbaud per port, while SWD is not flashing at full speed;
+- isolation control: semi-automatic (interlock + holders) and direct (switch modes from Python and the CLI);
+- firmware update over USB with esptool (`esw update`), recoverable even from a hung firmware;
+- two TTYs for standard terminal programs (daemon PTYs);
+- a custom Python tool for flashing (`esw`, library `esw.Esw`).
+
+Deferred to later revisions: USB-OTG (TinyUSB: CDC-ACM, vendor bulk, CMSIS-DAP) and OTA over the protocol. Moving
+to OTG gives up the hardware reset into the ROM downloader. Today that reset lets esptool recover the board with no
+button, even from a hung firmware.
 
 ## 10. Decisions (2026-11-06)
 1. **Host MCU:** ESP32-S3 now. The layers keep any other MCU possible; the ESP32-S31 was an example, not a target list.

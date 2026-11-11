@@ -13,8 +13,20 @@ It does three things:
 
 ![r5 board](docs/images/board_3d_iso.png)
 
-## Status (2026-11-09)
-Work in progress. What exists and is tested on hardware (board r5, channel A, nRF52840 DK):
+## Status (2026-11-11): MVP
+Firmware 0.5.0 (protocol 5) with the `esw` host tools covers the first usable scope:
+- **Two SWD channels**, two DUTs flashed at once: `esw flash A=app.hex B=fw.hex`.
+- **Two DUT UARTs as terminal devices**, up to 1 Mbaud each, full duplex: the daemon `esw serve` serves them as
+  `ttyA`/`ttyB` for picocom, minicom, screen, pyserial and the like.
+- **Isolation control:**
+  - semi-automatic: the switches close only while used and only with the DUT powered;
+  - direct: switch modes `auto`/`on`/`off` per group, from the CLI or Python.
+- **Firmware update over USB:** `esw update`, esptool through the chip's USB-Serial-JTAG. No buttons, and it
+  recovers even a hung firmware.
+
+Usage: **`host/python/README.md`**. Everything below is tested on hardware.
+
+Earlier results (board r5, channel A, nRF52840 DK):
 - **Isolation interlock:** VTref is checked before any signal switch closes. The switches reopen on VTref loss, host
   loss, reboot and firmware panic.
 - **SWD engines:** an ESP32-S3 dedicated-GPIO engine up to 8 MHz (10 MHz cap), and a portable bit-bang fallback.
@@ -32,10 +44,16 @@ Work in progress. What exists and is tested on hardware (board r5, channel A, nR
 - **Parallel channels:** one SWD worker per channel on its own CPU core. nRF5340 + STM32U585 flashed at once:
   5.5 s against 7.5 s one after the other (now limited by the USB-Serial-JTAG link, about 485 KB/s).
 
+- **Host daemon and TTYs (2026-11-11):** ttyA ↔ ttyB cabled across the two UART headers, both directions at once,
+  byte-exact at up to 2 Mbaud; at 1 Mbaud (97 KB/s each way) also while both DUTs flash. Both DUTs at once with
+  `esw flash`: 5.6 s against 8.6 s one after the other.
+  Programs share the board through the daemon (per-channel ownership, cleanup after a crash), and it survives board
+  reboots and firmware updates.
+
 | Not done yet |
 |---|
-| SWO and channel-B UART (untested on hardware); UART PTY bridge for terminal tools |
-| TinyUSB vendor interface with USB TTYs, optional CMSIS-DAP v2 |
+| SWO |
+| USB-OTG (TinyUSB): native CDC TTYs, vendor bulk interface, optional CMSIS-DAP v2; OTA over the protocol |
 | STM32U5 with TrustZone on, external-flash loaders on the streaming ABI, nRF5340 network-core fast path test |
 | multi-day soak |
 
@@ -49,8 +67,8 @@ ESP32-S3-WROOM-1-**N4** modules (4 MB flash, no PSRAM), not the N16 in the BOM.
 | `ports/esp32s3/` | ESP32-S3 port: dedicated-GPIO SWD engine, pins, ADC, clock |
 | `boards/r5/` | r5 board layer: pin map, switch groups, VTref divider, safe defaults |
 | `app/` | ESP-IDF v6 firmware for r5 (USB-Serial-JTAG transport). See `app/README.md` |
-| `host/python/` | Python host library (`esw`) and examples: flashing, speed test, PHY benchmark, robustness checks |
-| `host/udev/` | udev rule for the board |
+| `host/python/` | Python host library and CLI (`esw`), daemon with the TTY bridge (`esw serve`), examples: flashing, speed test, PHY benchmark, UART and TTY self-tests, robustness checks. See `host/python/README.md` |
+| `host/udev/`, `host/systemd/` | udev rule for the board; systemd user unit for the daemon |
 | `loaders/` | Target-side loader sources; `crc32/build.py` (built-in CRC loader) and `stm32u5/build.py` (STM32U5 streaming flash loader) rebuild and verify them in an emulator |
 | `testfw/` | Bare-metal test firmware for DUTs, e.g. `nrf52840_uart/` for the UART hardware test |
 | `tests/` | Host unit tests against a bit-level SWD target simulator (`tests/sim/`); CI in `.github/workflows/ci.yml` |
@@ -76,7 +94,16 @@ export PATH="$PATH:$PWD/.venv/bin"
 cd app && idf.py build && idf.py -p /dev/ttyACM0 flash
 ```
 
-Host examples (the board enumerates as `303a:1001`, `/dev/ttyACM0`):
+Host tools (the board enumerates as `303a:1001`, `/dev/ttyACM0`); full guide in `host/python/README.md`:
+```
+.venv/bin/pip install -e host/python esptool       # the `esw` command
+esw serve &                                         # TTYs: $XDG_RUNTIME_DIR/esp-swd/<board>/ttyA, ttyB
+esw info                                            # channels, switches, modes, TTYs
+esw flash A=app.hex B=stm32.hex                     # both channels at once
+esw mode B uart off                                 # isolation switch modes: auto | on | off
+esw update app/build                                # board firmware over USB
+```
+Examples (they also run through the daemon):
 ```
 .venv/bin/python host/python/examples/nrf52_blinky.py --channel A          # attach, flash a test image, watch it run
 .venv/bin/python host/python/examples/flash_speed.py --size 1M --window 3 --verify crc

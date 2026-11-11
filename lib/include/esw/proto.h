@@ -14,10 +14,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ESW_PROTO_VERSION      4u   /* 2: UART bridge (0x30..0x33, event 0xE0); 3: raw DAP access (0x2C),
+#define ESW_PROTO_VERSION      5u   /* 2: UART bridge (0x30..0x33, event 0xE0); 3: raw DAP access (0x2C),
                                        attach core byte; 4: channels run in parallel, each with its own queue of
-                                       ESW_PROTO_CH_QUEUE request frames (before: 3 frames in flight in total) */
-#define ESW_PROTO_CH_QUEUE     4u   /* proto >= 4: channel requests (hold/release, 0x20..0x2F) the host may have in
+                                       ESW_PROTO_CH_QUEUE request frames (before: 3 frames in flight in total);
+                                       5: switch modes (0x13), longer CH_STATE, UART internal loopback */
+#define ESW_PROTO_CH_QUEUE     4u   /* proto >= 4: channel requests (0x10, 0x11, 0x13, 0x20..0x2F) the host may have in
                                        flight per channel; channel responses may overtake each other */
 #define ESW_PROTO_MAX_PAYLOAD  2304u                    /* seq + cmd + status + 2 KB data + headroom */
 #define ESW_COBS_MAX(n)        ((n) + (n) / 254u + 2u)
@@ -25,12 +26,21 @@
 
 enum {
     ESW_CMD_PING = 0x01,        /* data echoed */
-    ESW_CMD_INFO = 0x02,        /* -> proto u32, uptime_ms u32, reset_reason u32, free_heap u32, fw char[32] */
+    ESW_CMD_INFO = 0x02,        /* -> proto u32, uptime_ms u32, reset_reason u32, free_heap u32, fw char[32]
+                                      [proto >= 5] boot_id u32 (random, new at every boot) */
     ESW_CMD_REBOOT = 0x03,      /* mode u8: 0 normal, 1 ROM download */
     ESW_CMD_CH_HOLD = 0x10,     /* ch u8, group u8 */
     ESW_CMD_CH_RELEASE = 0x11,  /* ch u8, group u8 */
-    ESW_CMD_CH_STATE = 0x12,    /* ch u8 -> vtref_mv i32, vtref_closed u8, swd u8, uart u8, pad u8,
-                                         holders_swd u32, holders_uart u32 */
+    ESW_CMD_CH_STATE = 0x12,    /* ch u8 -> vtref_mv i32, vtref_closed u8, swd u8, uart u8 (esw_gstate_t),
+                                         vtref_valid u8, holders_swd u32, holders_uart u32,
+                                         [proto >= 5] mode_swd u8, mode_uart u8 (ESW_MODE_*), uart u8 (bit0 stream
+                                         open, bit1 pads routed, bit2 loopback), attached u8 */
+    ESW_CMD_CH_MODE = 0x13,     /* ch u8, group u8 (1 SWD, 2 UART), mode u8 (ESW_MODE_*): the host's standing
+                                   order for a switch group. Interlock and VTref check apply in every mode. "off" on
+                                   SWD ends an attached session first (debug off, pin reset); on UART it waits up to
+                                   200 ms for TX to drain. "on" ends with host loss; "off" stays until changed or
+                                   reboot. Runs on the channel's worker for SWD, on the dispatcher for UART (the
+                                   host budgets it as a channel resp. a device command). */
     ESW_CMD_SWD_ATTACH = 0x20,  /* ch u8, clock u32 [, phy u8: 0 bit-bang (clock = half-period loops), 1 dgpio
                                    (clock = Hz, 0 = 8 MHz) [, core u8: multi-core parts, e.g. nRF5340 0 app,
                                    1 network; generic module: AP index; | 0x80: raw, generic module only]]
@@ -67,6 +77,11 @@ enum {
                                    dma_err u32 */
 };
 
+/* ESW_CMD_CH_MODE modes. Every boot starts in AUTO with nothing held: isolated. */
+#define ESW_MODE_AUTO 0u   /* closed while something uses the group: an SWD session/job, a UART stream */
+#define ESW_MODE_ON   1u   /* closed whenever the DUT is powered (VTref valid), used or not */
+#define ESW_MODE_OFF  2u   /* never closed: attach and UART writes fail with ESW_ERR_INTERLOCK */
+
 /* Events (device -> host). */
 enum {
     ESW_EVT_UART_RX = 0xE0,     /* ch u8, flags u8 (ESW_UART_RX_*), ts_us u32 (device time when read), data... */
@@ -79,6 +94,8 @@ enum {
 #define ESW_UART_TX_STRONG    (1u << 4)    /* TX at full drive strength (default weakest: slower edges, less
                                               crosstalk into RX over plain jumper wires) */
 #define ESW_UART_NO_DMA       (1u << 5)    /* keep this channel on the interrupt-driven back-end */
+#define ESW_UART_LOOPBACK     (1u << 6)    /* self-test: TX looped to RX inside the UART; the pads stay on their
+                                              safe idle state and the switch group is not held (no DUT needed) */
 /* ESW_EVT_UART_RX flags: something happened since the previous RX event of this channel. */
 #define ESW_UART_RX_LOST      (1u << 0)    /* bytes were lost: UART FIFO overflow, RX buffer full, or USB backlog */
 #define ESW_UART_RX_ERROR     (1u << 1)    /* framing or parity error */

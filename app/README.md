@@ -109,6 +109,7 @@ Each channel's DUT UART is bridged over the same framed protocol (`lib/include/e
 | `UART_CLOSE` (0x31) | Waits for TX to drain, stops the stream and releases the hold (the switches open) |
 | `UART_WRITE` (0x32) | Queues TX data and returns how much fit. Refused with `ESW_ERR_INTERLOCK` unless the group is closed and the pads are routed |
 | `UART_STATS` (0x33) | Counters: rx, tx, USB drops, FIFO overflows, buffer-full events, framing/parity/break errors |
+| `CH_MODE` (0x13, protocol 5) | Switch mode per group: `auto` (closed while used), `on` (closed whenever VTref is valid), `off` (never closed). See `host/python/README.md` |
 | event 0xE0 | RX data, pushed unsolicited: channel, flags (data lost / line error / break), device timestamp (µs), up to 2 KB |
 
 How it works:
@@ -149,6 +150,19 @@ How it works:
     460800.
   - Flags `ESW_UART_TX_STRONG` and `ESW_UART_RX_NOFILT` switch them back for diagnosis.
 
+**Self-test without a DUT (protocol 5):** `ESW_UART_LOOPBACK` in `UART_OPEN` loops TX to RX inside the ESP32-S3
+UART (`UART_CONF0.loopback`). The pads stay on their safe idle state and the switch group is not held, so it needs
+no wiring and touches no DUT. `host/python/examples/uart_loopback.py` streams both channels at once through it:
+- 1 Mbaud: 97.6 KB/s each way per channel for 10 s, 0 lost (DMA back-end on A, IRQ back-end on B);
+- 2 Mbaud: 195 KB/s each way per channel, about 780 KB/s over USB-Serial-JTAG in total, 0 lost, 0 FIFO overflow.
+
+Through the host daemon's PTYs (`esw serve --test-loopback`, `examples/tty_loopback.py`): the same 97 KB/s each
+way at 1 Mbaud on both TTYs, byte-exact, also while the STM32 flashed and the nRF5340 was read back.
+
+**Real pads, A ↔ B (2026-11-11):** J302 and J402 cross-cabled, through both channels' switches, via the TTYs
+(`tty_loopback.py --cross`): both directions at once byte-exact at 115200, 460800, 1 M and 2 Mbaud, 8E1 included;
+20 s at 1 Mbaud during a dual-DUT flash with 0 line, overflow or buffer errors on the board.
+
 **Stress test:** `host/python/examples/uart_stress.py`. It runs everything at once:
 - channel A in full duplex with the DK;
 - channel B through a loopback jumper;
@@ -185,8 +199,10 @@ Check it on hardware with `host/python/examples/robustness_check.py`. It needs t
 enables the `TEST_PANIC` command.
 
 ## Updating later (no buttons on r5)
-1. **`idf.py flash` / esptool over USB-Serial-JTAG.** This works while this firmware runs and even if it hangs: the
-   reset into the downloader is done by the USB-Serial-JTAG peripheral. Keep it that way:
+1. **`esw update app/build`** (or `esw update merged.bin` from `idf.py merge-bin`), **`idf.py flash`**, or plain
+   esptool over USB-Serial-JTAG. This works while this firmware runs and even if it hangs: the reset into the
+   downloader is done by the USB-Serial-JTAG peripheral. `esw update` suspends a running `esw serve` around the
+   write. Keep it that way:
    - never reconfigure GPIO19/20;
    - never switch the USB PHY to OTG without the measures below.
 2. **`REBOOT` command, mode 1** (`Esw.reboot(rom_download=True)`): sets the RTC force-download flag and restarts.

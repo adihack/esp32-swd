@@ -25,65 +25,13 @@ import zlib
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from esw import Esw, EswError, proto as P  # noqa: E402
-
-
-def read_hex(path):
-    """Intel HEX -> {address: byte}. Record types 00 data, 01 EOF, 02/04 address extension; 03/05 ignored."""
-    mem, base = {}, 0
-    for n, line in enumerate(open(path), 1):
-        line = line.strip()
-        if not line:
-            continue
-        if not line.startswith(":"):
-            raise ValueError("%s:%d: not an Intel HEX record" % (path, n))
-        rec = bytes.fromhex(line[1:])
-        if len(rec) < 5 or len(rec) != rec[0] + 5 or sum(rec) & 0xFF:
-            raise ValueError("%s:%d: bad length or checksum" % (path, n))
-        cnt, addr, typ, data = rec[0], (rec[1] << 8) | rec[2], rec[3], rec[4:-1]
-        if typ == 0:
-            for i, b in enumerate(data):
-                mem[base + addr + i] = b
-        elif typ == 1:
-            break
-        elif typ == 2:
-            base = int.from_bytes(data, "big") << 4
-        elif typ == 4:
-            base = int.from_bytes(data, "big") << 16
-    return mem
-
-
-def page_runs(mem, regions):
-    """{address: byte} -> [(start, bytes)] covering whole erase pages, adjacent pages merged, gaps 0xFF."""
-    pages = {}
-    for a in mem:
-        r = next((r for r in regions if r["start"] <= a < r["start"] + r["size"]), None)
-        if r is None:
-            raise ValueError("address 0x%08X is outside every memory region of the target" % a)
-        if r["kind"] not in ("flash", "otp"):
-            raise ValueError("address 0x%08X is in %s, not flash" % (a, r["kind"]))
-        pg = r["sector"]
-        pages[a - (a - r["start"]) % pg] = pg
-    runs, cur = [], None
-    for start in sorted(pages):
-        if cur and cur[0] + cur[1] == start:
-            cur[1] += pages[start]
-        else:
-            cur = [start, pages[start]]
-            runs.append(cur)
-    out = []
-    for start, size in runs:
-        buf = bytearray(b"\xff" * size)
-        for a in range(start, start + size):
-            if a in mem:
-                buf[a - start] = mem[a]
-        out.append((start, bytes(buf)))
-    return out
+from esw.image import load, page_runs, size  # noqa: E402
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("image", nargs="?")
-    ap.add_argument("--port", default="/dev/ttyACM0")
+    ap.add_argument("--port", help="device, board id or unix:<socket>; default: the only board (through esw serve if it runs)")
     ap.add_argument("--channel", default="A", choices=("A", "B"))
     ap.add_argument("--core", type=int, default=0, help="multi-core parts: nRF5340 0 application, 1 network")
     ap.add_argument("--addr", type=lambda s: int(s, 0), help=".bin load address (default: start of flash)")
@@ -118,13 +66,7 @@ def main():
                 info = d.unlock(ch, allow_erase=True)   # no re-attach: that would reset the part
                 print("unlocked:", info["part"])
             regions = info["regions"]
-            if args.image.lower().endswith((".hex", ".ihex")):
-                mem = read_hex(args.image)
-            else:
-                data = open(args.image, "rb").read()
-                base = args.addr if args.addr is not None else next(r["start"] for r in regions
-                                                                     if r["kind"] == "flash")
-                mem = {base + i: b for i, b in enumerate(data)}
+            mem = load(args.image, regions, args.addr)   # segments [(address, bytes)]
             if not mem:
                 sys.exit("image is empty")
             runs = page_runs(mem, regions)
@@ -135,7 +77,7 @@ def main():
                 print("  0x%08X  %7d bytes  %.2f s  crc32 %08X ok" % (start, len(buf), time.monotonic() - t1,
                                                                        zlib.crc32(buf)))
             dt = time.monotonic() - t0
-            print("%d bytes (%d data) in %.2f s, %.0f KB/s, verified" % (total, len(mem), dt, total / dt / 1024))
+            print("%d bytes (%d data) in %.2f s, %.0f KB/s, verified" % (total, size(mem), dt, total / dt / 1024))
         except EswError as e:
             print("error:", e)
             return 1

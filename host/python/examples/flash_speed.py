@@ -31,7 +31,7 @@ def crc_check(d, ch, data):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", default="/dev/ttyACM0")
+    ap.add_argument("--port", help="device, board id or unix:<socket>; default: the only board (through esw serve if it runs)")
     ap.add_argument("--channel", default="A", choices="AB")
     ap.add_argument("--size", type=size_arg, default=64 * 1024)
     ap.add_argument("--window", type=int, default=1, help="frames in flight (1 = strict request/response)")

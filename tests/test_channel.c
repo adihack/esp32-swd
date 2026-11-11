@@ -171,6 +171,52 @@ static void host_returns_within_grace(void)
     CHECK_ERR(esw_channel_hold(&ch, ESW_GROUP_VTREF, ESW_HOLD_LOCAL), ESW_ERR_ARG);
 }
 
+/* Mode "off": an inhibited group opens at once, stays open whatever holds it, does not even close VTref sensing,
+ * and survives host loss; lifting it brings the holders back into effect. */
+static void inhibit_keeps_group_open(void)
+{
+    setup(3000);
+    CHECK_OK(esw_channel_hold(&ch, ESW_GROUP_SWD, ESW_HOLD_LOCAL));
+    esw_channel_tick(&ch, 0);
+    esw_channel_tick(&ch, 50);
+    CHECK_EQ(f.sw[ESW_GROUP_SWD], 1);
+    uint32_t gen = ch.opened[ESW_GROUP_SWD];
+    CHECK_OK(esw_channel_inhibit(&ch, ESW_GROUP_SWD, 1));
+    esw_channel_tick(&ch, 52);
+    CHECK_EQ(f.sw[ESW_GROUP_SWD], 0);
+    CHECK_EQ(f.sw[ESW_GROUP_VTREF], 0);                  /* nothing wants to close: sensing off too */
+    CHECK(ch.opened[ESW_GROUP_SWD] != gen);              /* a session on it is stale */
+    CHECK_EQ(esw_channel_state(&ch, ESW_GROUP_SWD), ESW_GSTATE_OPEN);
+    f.log[0] = 0;
+    CHECK_OK(esw_channel_hold(&ch, ESW_GROUP_SWD, ESW_HOLD_HOST_PIN));
+    esw_channel_set_host_present(&ch, 0, 100);
+    for (uint32_t t = 100; t < 5000; t += 10)
+        esw_channel_tick(&ch, t);
+    CHECK(f.log[0] == 0);                                /* never touched a switch */
+    CHECK_EQ(ch.holders[ESW_GROUP_SWD], ESW_HOLD_LOCAL); /* host loss dropped the pin, kept the local holder */
+    CHECK(ch.inhibit & (1u << ESW_GROUP_SWD));           /* ... and the inhibit */
+    esw_channel_set_host_present(&ch, 1, 5000);
+    CHECK_OK(esw_channel_inhibit(&ch, ESW_GROUP_SWD, 0));
+    esw_channel_tick(&ch, 5000);
+    esw_channel_tick(&ch, 5050);
+    CHECK(strcmp(f.log, "V1 pS S1 ") == 0);              /* back through the full interlock sequence */
+    CHECK_ERR(esw_channel_inhibit(&ch, ESW_GROUP_VTREF, 1), ESW_ERR_ARG);
+}
+
+/* Mode "on" (host pin): the UART group closes with no stream open, and only on a powered DUT. */
+static void pin_needs_vtref(void)
+{
+    setup(1700);
+    CHECK_OK(esw_channel_hold(&ch, ESW_GROUP_UART, ESW_HOLD_HOST_PIN));
+    for (uint32_t t = 0; t < 500; t += 10)
+        esw_channel_tick(&ch, t);
+    CHECK_EQ(f.sw[ESW_GROUP_UART], 0);
+    CHECK_EQ(esw_channel_state(&ch, ESW_GROUP_UART), ESW_GSTATE_WAIT_VTREF);
+    f.vtref_mv = 3300;
+    esw_channel_tick(&ch, 510);
+    CHECK_EQ(f.sw[ESW_GROUP_UART], 1);
+}
+
 int main(void)
 {
     RUN(default_isolated);
@@ -181,5 +227,7 @@ int main(void)
     RUN(openings_are_counted);
     RUN(host_loss_releases_host_holders);
     RUN(host_returns_within_grace);
+    RUN(inhibit_keeps_group_open);
+    RUN(pin_needs_vtref);
     return TT_RESULT();
 }

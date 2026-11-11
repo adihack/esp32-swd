@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from esw import Esw, EswError, proto as P  # noqa: E402
 from nrf52_blinky import BLINKY  # noqa: E402
 
-PORT, CH = "/dev/ttyACM0", 0
+PORT, CH = "/dev/ttyACM0", 0   # direct link only: stop `esw serve` first (it tests host loss on the port)
 DHCSR, P0_OUT = 0xE000EDF0, 0x50000504
 RESULTS = []
 
@@ -33,11 +33,14 @@ def check(name, ok, info=""):
 def connect(timeout=15.0):
     t0 = time.monotonic()
     while time.monotonic() - t0 < timeout:
+        d = None
         try:
             d = Esw(PORT, timeout=1.0)
             d.ping()
             return d
         except Exception:  # noqa: BLE001 - port re-appearing after a reset
+            if d is not None:
+                d.close()   # the port is opened exclusively: let go before the next try
             time.sleep(0.3)
     raise TimeoutError("device did not come back")
 

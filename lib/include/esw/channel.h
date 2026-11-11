@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: MIT */
 /* esp-swd: per-channel isolation state machine and interlock (hardware-agnostic).
  *
- * Switch groups: VTREF (sense), SWD, UART. A signal group is closed only while it has a holder and the DUT is
- * powered (VTref inside the window after the settle time). The VTREF switch closes first and opens last.
- * Default: isolated. Host loss releases host-owned holders after a grace period.
+ * Switch groups: VTREF (sense), SWD, UART. A signal group is closed only while it has a holder, is not inhibited
+ * and the DUT is powered (VTref inside the window after the settle time). The VTREF switch closes first and opens
+ * last. Default: isolated. Host loss releases host-owned holders after a grace period; an inhibit stays (it only
+ * ever keeps a group open).
  *
  * Drive it with esw_channel_tick() every few milliseconds; every switch change happens inside tick().
  */
@@ -20,8 +21,10 @@ typedef enum { ESW_GROUP_VTREF = 0, ESW_GROUP_SWD = 1, ESW_GROUP_UART = 2 } esw_
 #define ESW_HOLD_DAP        (1u << 1)   /* CMSIS-DAP DAP_Connect .. DAP_Disconnect */
 #define ESW_HOLD_HOST_UART  (1u << 2)   /* UART stream subscribed in the vendor protocol */
 #define ESW_HOLD_CDC_UART   (1u << 3)   /* CDC-ACM port open (DTR) */
+#define ESW_HOLD_HOST_PIN   (1u << 4)   /* host set the group's mode to "on": closed whenever the DUT is powered */
 #define ESW_HOLD_LOCAL      (1u << 8)   /* firmware-internal job; not released by host loss */
-#define ESW_HOLD_HOST_MASK  (ESW_HOLD_HOST_JOB | ESW_HOLD_DAP | ESW_HOLD_HOST_UART | ESW_HOLD_CDC_UART)
+#define ESW_HOLD_HOST_MASK  (ESW_HOLD_HOST_JOB | ESW_HOLD_DAP | ESW_HOLD_HOST_UART | ESW_HOLD_CDC_UART | \
+                             ESW_HOLD_HOST_PIN)
 
 typedef enum { ESW_GSTATE_OPEN = 0, ESW_GSTATE_WAIT_VTREF, ESW_GSTATE_CLOSED } esw_gstate_t;
 
@@ -61,6 +64,7 @@ typedef struct {
     void *ctx;
     esw_channel_cfg_t cfg;
     uint32_t holders[ESW_GROUP_COUNT];     /* [ESW_GROUP_VTREF] unused: VTREF follows the signal groups */
+    uint32_t inhibit;                      /* bit (1 << group): the group stays open whatever holds it */
     esw_gstate_t gstate[ESW_GROUP_COUNT];
     uint8_t vtref_closed, vtref_valid, vtref_ok, host_present, host_loss_done;
     uint32_t vtref_since_ms, host_lost_ms;
@@ -73,6 +77,9 @@ typedef struct {
 void esw_channel_init(esw_channel_t *c, const esw_channel_ops_t *ops, void *ctx, const esw_channel_cfg_t *cfg);
 esw_err_t esw_channel_hold(esw_channel_t *c, esw_group_t g, uint32_t holder);
 esw_err_t esw_channel_release(esw_channel_t *c, esw_group_t g, uint32_t holder);
+/* Inhibit (mode "off"): the group opens at the next tick and stays open, whatever holds it; holders are kept and
+ * take effect again once the inhibit is lifted. Survives host loss; init clears it. */
+esw_err_t esw_channel_inhibit(esw_channel_t *c, esw_group_t g, uint32_t on);
 void esw_channel_set_host_present(esw_channel_t *c, uint32_t present, uint32_t now_ms);
 void esw_channel_tick(esw_channel_t *c, uint32_t now_ms);
 void esw_channel_isolate(esw_channel_t *c);   /* drop every holder and open everything now */

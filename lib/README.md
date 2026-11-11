@@ -13,7 +13,7 @@ through op tables supplied by a port or board. The design is in `../docs/firmwar
 | Loader runtime | `include/esw/loader.h`, `core/loader/loader.c` | Generic RAM loaders for any chip: download and verify, call ABI (FLM-style, returns to a BKPT trap), streaming ABI (mailbox + buffer ring, the core keeps running) |
 | Target interface | `include/esw/target.h`, `core/target/target.c` | Module interface, registry, routing per memory region (direct or loader), verify (read-back, or CRC on the target) |
 | Target modules | `targets/<name>/`, `targets/registry.c` | Chip and family support. Now: `nrf52`, `nrf53` (nRF5340, two cores), `stm32u5`, and `generic` (any Cortex-M, registered last) |
-| Channel | `include/esw/channel.h`, `channel/channel.c` | Isolation interlock: VTref first, holders, VTref-loss and host-loss handling |
+| Channel | `include/esw/channel.h`, `channel/channel.c` | Isolation interlock: VTref first, holders, VTref-loss and host-loss handling; inhibit (switch mode "off") and the host pin holder (mode "on") |
 
 ## Build and test on a PC
 ```

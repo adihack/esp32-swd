@@ -226,7 +226,7 @@ esp_err_t esw_uart_start(esw_uart_t *u, uint32_t baud, uint32_t flags, esw_uart_
 {
     uint32_t par = flags & ESW_UART_PARITY_MASK;
     const uint32_t known = ESW_UART_PARITY_MASK | ESW_UART_STOP2 | ESW_UART_RX_NOFILT | ESW_UART_TX_STRONG |
-                           ESW_UART_NO_DMA;
+                           ESW_UART_NO_DMA | ESW_UART_LOOPBACK;
     if (par == 3u || (flags & ~known) || baud < 300u || baud > 5000000u || be == ESW_UART_BE_OFF)
         return ESP_ERR_INVALID_ARG;
     esw_uart_stop(u);
@@ -247,6 +247,7 @@ esp_err_t esw_uart_start(esw_uart_t *u, uint32_t baud, uint32_t flags, esw_uart_
     filt = filt < 4u ? 4u : filt > 255u ? 255u : filt;
     hw->rx_filt.glitch_filt = filt;
     hw->rx_filt.glitch_filt_en = (flags & ESW_UART_RX_NOFILT) ? 0u : 1u;
+    uart_ll_set_loop_back(hw, (flags & ESW_UART_LOOPBACK) != 0);   /* self-test: TX -> RX inside the UART */
     u->tx_strong = (flags & ESW_UART_TX_STRONG) ? 1u : 0u;
     gpio_ll_set_drive_capability(&GPIO, u->tx, u->tx_strong ? GPIO_DRIVE_CAP_2 : GPIO_DRIVE_CAP_0);
     if (be == ESW_UART_BE_IRQ) {

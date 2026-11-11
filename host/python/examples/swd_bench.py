@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from esw import Esw, proto as P  # noqa: E402
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--port", default="/dev/ttyACM0")
+ap.add_argument("--port", help="device, board id or unix:<socket>; default: the only board (through esw serve if it runs)")
 ap.add_argument("--channel", default="A", choices="AB")
 ap.add_argument("--clocks", default="0", help="bit-bang: half-period loops; dgpio: Hz (e.g. 1e6,8e6)")
 ap.add_argument("--phy", type=int, default=0, help="0 bit-bang, 1 dedicated GPIO")

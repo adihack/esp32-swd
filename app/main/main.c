@@ -19,6 +19,7 @@
 #include "freertos/semphr.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_timer.h"
+#include "esp_random.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 #include "soc/rtc_cntl_reg.h"
@@ -37,7 +38,7 @@
 #include "esw_uart.h"
 #include "board_r5.h"
 
-#define FW_NAME "esp-swd 0.4.0 r5/usj"
+#define FW_NAME "esp-swd 0.5.0 r5/usj"
 #define HOST_LEASE_MS 3000u      /* no valid frame for this long = host gone (then the channel grace period runs) */
 #define MAX_WORDS 512u
 #define UART_CHUNK 2048u          /* RX bytes per event frame */
@@ -61,6 +62,7 @@ typedef struct {
     esw_uart_t u;
     volatile uint8_t open;    /* stream open (UART_OPEN .. UART_CLOSE or host loss) */
     volatile uint8_t routed;  /* the pads are on the UART for the current closing of the group */
+    volatile uint8_t loop;    /* ESW_UART_LOOPBACK self-test: TX looped to RX inside the UART, pads never routed */
     uint8_t pend;             /* ESW_UART_RX_* flags for the next RX event */
     uint32_t baud, flags;
     uint32_t gen;             /* channel.opened[UART] when the pads were routed to the UART; UART_NOT_ROUTED */
@@ -84,6 +86,8 @@ static esw_dgpio_t g_dg[BOARD_NUM_CHANNELS];   /* created at boot by each channe
 static uint8_t g_dg_ok[BOARD_NUM_CHANNELS];
 static SemaphoreHandle_t g_lock;
 static session_t g_s[BOARD_NUM_CHANNELS];
+static uint32_t g_boot_id;                       /* new at every boot, reported by INFO */
+static RTC_NOINIT_ATTR uint32_t s_boot_count;    /* survives software resets (panic, REBOOT); random at power-on */
 static volatile uint32_t g_last_rx_ms, g_busy;   /* g_busy: commands in progress (atomic counter) */
 static esw_frame_rx_t g_rx;
 static uint8_t g_req[ESW_PROTO_MAX_PAYLOAD], g_rsp[ESW_PROTO_MAX_PAYLOAD], g_usb[4096];   /* dispatcher only */
@@ -119,6 +123,14 @@ static esw_gstate_t group_state(int ch, esw_group_t g)
         xSemaphoreGive(g_lock);
     }
     return st;
+}
+
+/* The host's standing order for a group (ESW_MODE_*), from the channel's state. With g_lock held. */
+static uint8_t group_mode(int ch, esw_group_t g)
+{
+    if (g_ch[ch].inhibit & (1u << g))
+        return ESW_MODE_OFF;
+    return (g_ch[ch].holders[g] & ESW_HOLD_HOST_PIN) ? ESW_MODE_ON : ESW_MODE_AUTO;
 }
 
 /* ---- interlock tick ------------------------------------------------------------------------------------ */
@@ -355,10 +367,12 @@ static void uart_do(uart_req_t *q)
     q->be = (uint8_t)be;
     u->baud = q->actual;
     u->flags = q->flags;
+    u->loop = (q->flags & ESW_UART_LOOPBACK) ? 1u : 0u;
     u->pend = 0;
     u->rx = u->tx = u->usb_drop = u->route_fail = 0;
     u->open = 1;
-    uart_sync_route(q->ch);   /* group already closed (e.g. a baud change): route now */
+    if (!u->loop)
+        uart_sync_route(q->ch);   /* group already closed (e.g. a baud change): route now */
 }
 
 /* Proto task: run a request on the uart task (core 0) and wait for it. */
@@ -459,9 +473,11 @@ static void uart_task(void *arg)
                 continue;   /* USB still busy: the back-end's ring keeps filling meanwhile */
             if (!u->open)
                 continue;
-            uart_sync_route(c);
-            if (!u->routed)
-                continue;
+            if (!u->loop) {
+                uart_sync_route(c);
+                if (!u->routed)
+                    continue;
+            }
             for (;;) {
                 size_t got = esw_uart_read(&u->u, pl + 9, UART_CHUNK);
                 if (!got)
@@ -564,7 +580,8 @@ static int handle(const uint8_t *q, int n, uint8_t *r)
         wr32(r + 15, (uint32_t)esp_get_free_heap_size());
         memset(r + 19, 0, 32);
         strncpy((char *)r + 19, FW_NAME, 31);
-        rl = 51;
+        wr32(r + 51, g_boot_id);   /* proto >= 5: changes at every boot, so the host sees any restart */
+        rl = 55;
         break;
     case ESW_CMD_REBOOT:
         NEED(1);
@@ -604,9 +621,38 @@ static int handle(const uint8_t *q, int n, uint8_t *r)
         r[10] = g_ch[ch].vtref_valid;
         wr32(r + 11, g_ch[ch].holders[ESW_GROUP_SWD]);
         wr32(r + 15, g_ch[ch].holders[ESW_GROUP_UART]);
+        r[19] = group_mode(ch, ESW_GROUP_SWD);
+        r[20] = group_mode(ch, ESW_GROUP_UART);
         xSemaphoreGive(g_lock);
-        rl = 19;
+        r[21] = (uint8_t)(g_u[ch].open | (g_u[ch].routed << 1) | (g_u[ch].loop << 2));
+        r[22] = g_s[ch].attached;
+        rl = 23;
         break;
+    case ESW_CMD_CH_MODE: {   /* SWD: on the channel's worker ("off" ends the session on its core); UART: dispatcher */
+        CHAN();
+        NEED(3);
+        esw_group_t g = (esw_group_t)a[1];
+        uint8_t m = a[2];
+        if ((g != ESW_GROUP_SWD && g != ESW_GROUP_UART) || m > ESW_MODE_OFF) {
+            st = ESW_ERR_ARG;
+            break;
+        }
+        if (m == ESW_MODE_OFF && g == ESW_GROUP_SWD)
+            detach(ch);   /* clean end (debug off, pin reset) while the switch is still closed */
+        if (m == ESW_MODE_OFF && g == ESW_GROUP_UART)
+            for (int i = 0; i < 200 && g_u[ch].open && !esw_uart_tx_idle(&g_u[ch].u); i++)
+                vTaskDelay(pdMS_TO_TICKS(1));   /* never open the switch in the middle of a byte */
+        if (!xSemaphoreTake(g_lock, pdMS_TO_TICKS(100))) {
+            st = ESW_ERR_TIMEOUT;
+            break;
+        }
+        st = m == ESW_MODE_ON ? esw_channel_hold(&g_ch[ch], g, ESW_HOLD_HOST_PIN)
+                              : esw_channel_release(&g_ch[ch], g, ESW_HOLD_HOST_PIN);
+        if (st == ESW_OK)
+            st = esw_channel_inhibit(&g_ch[ch], g, m == ESW_MODE_OFF);
+        xSemaphoreGive(g_lock);
+        break;
+    }
     case ESW_CMD_SWD_ATTACH: {
         CHAN();
         NEED(5);
@@ -784,7 +830,7 @@ static int handle(const uint8_t *q, int n, uint8_t *r)
             uart_hold(ch, 0);
             break;
         }
-        uart_hold(ch, 1);
+        uart_hold(ch, (q.flags & ESW_UART_LOOPBACK) ? 0u : 1u);   /* loopback: the pads are not used */
         wr32(r + 3, q.actual);
         r[7] = q.be;   /* 1 interrupt-driven, 2 DMA */
         rl = 8;
@@ -804,7 +850,7 @@ static int handle(const uint8_t *q, int n, uint8_t *r)
             st = ESW_ERR_STATE;
             break;
         }
-        if (!u->routed) {
+        if (!u->routed && !u->loop) {
             /* closed but the uart task has not routed the pads yet (within 1 ms): accept nothing, the host retries;
              * isolated or VTref missing: nothing may be driven towards the DUT */
             if (group_state(ch, ESW_GROUP_UART) != ESW_GSTATE_CLOSED)
@@ -862,13 +908,18 @@ done:
     return rl;
 }
 
-/* Channel commands go to the channel's worker: hold/release (a release may end the session) and all SWD/target
+/* Channel commands go to the channel's worker: hold/release/mode (they may end the session) and all SWD/target
  * commands. Everything else (device, state, UART) is answered by the dispatcher. */
 static int channel_of(const uint8_t *q, int n)
 {
     uint8_t c = q[1];
     if (n < 3 || q[2] >= BOARD_NUM_CHANNELS)
         return -1;
+    /* CH_MODE: SWD on the worker (it may end the session); UART on the dispatcher, the task that also runs
+     * UART_WRITE/OPEN/CLOSE, so draining TX and opening the switch cannot interleave with a write or a back-end
+     * change */
+    if (c == ESW_CMD_CH_MODE)
+        return (n >= 4 && q[3] == ESW_GROUP_SWD) ? q[2] : -1;
     if (c == ESW_CMD_CH_HOLD || c == ESW_CMD_CH_RELEASE || (c >= 0x20 && c <= 0x2F))
         return q[2];
     return -1;
@@ -1012,6 +1063,9 @@ void IRAM_ATTR __wrap_esp_panic_handler(void *info)
 void app_main(void)
 {
     board_safe_init();   /* before anything else: every switch open, every driver idle */
+    /* the counter makes consecutive software restarts differ even if esp_random() (no RF running) repeats its
+     * sequence; the odd multiplier keeps distinct counts distinct */
+    g_boot_id = esp_random() ^ (++s_boot_count * 2654435761u);
     esp_register_shutdown_handler(board_isolate_now);   /* every esp_restart(), e.g. a future OTA reboot */
     /* Brown-out: the BOD ISR (core 0, same core as the interlock tick) calls this before anything else, so the
      * switches open while the tool rail sags instead of after the reset. */

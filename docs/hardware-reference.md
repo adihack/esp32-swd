@@ -316,7 +316,11 @@ Run with `firmware/poc_swd`, `./run.sh diag A`, on board 2 channel A, against an
 | STM32U585 streaming loader (2026-11-10) | 2 MB random: erase 0.35 s, program 6.37 s (322 KB/s, probe-driven bursts were 154 KB/s), CRC 0.29 s at MSIS 48 MHz (3.9 s at the 4 MHz reset clock); real 1.2 MB image 4.2 s; 94 WAITs per 2 MB instead of 2.6 M |
 | nRF5340 network core (2026-11-10) | 256 KB backup written back through the fast whole-flash erase in 0.71 s (page by page: 12 s); UICR identical afterwards |
 | Parallel channels (2026-11-10) | nRF5340 + STM32U585 at once from two host threads: 10.8 s wall against 14.6 s sequential (STM32 probe-driven, on core 1); with the STM32 loader 5.5 s against 7.5 s. USB-Serial-JTAG carries at most about 485 KB/s toward the board; the two channels together reach about 390 KB/s. Both sessions end cleanly on host loss and on REBOOT |
-| Not tested | SWO, channel-B UART |
+| Both UARTs at once (2026-11-11, firmware 0.5.0) | Internal loopback (`ESW_UART_LOOPBACK`, no pads), full duplex on A (DMA) and B (IRQ) at once through USB: 1 Mbaud 97.6 KB/s each way per channel, 2 Mbaud 195 KB/s (about 780 KB/s over USB-Serial-JTAG in total), 0 lost, 0 FIFO overflow. Through the host daemon's PTYs with pyserial: 1 Mbaud on both, byte-exact, also during an STM32 flash and an nRF5340 read-back |
+| Switch modes (2026-11-11) | Channel B: mode `on` closes the UART group at VTref 3.27 V with nothing open; `off` opens it and VTref sensing too, also with a TTY open (writes dropped); `auto` closes it while the TTY is open and opens it when the TTY closes |
+| USB across a software restart | USB-Serial-JTAG stays enumerated through `esp_restart()` (REBOOT, panic): the host keeps the same `/dev/ttyACM0` and sees no disconnect. The daemon detects a restart by the board's uptime |
+| UART pads, A ↔ B (2026-11-11) | Cables J302.2 → J402.3 and J402.2 → J302.3 (common GND on the board). Both directions at once through U302/U402, via the daemon's TTYs: byte-exact at 115200, 460800, 1 M and 2 Mbaud; 8E1 at 1 Mbaud; 20 s at 1 Mbaud (2 MB each way) during a dual-DUT flash: 0 framing, parity, FIFO-overflow or buffer-full errors. Default drive (weakest) and RX glitch filter |
+| Not tested | SWO |
 
 - Note: the DK runs at 2.98 V, so the tool's 3.3 V highs are 0.32 V above DUT VDD. That is at the nRF52840's
   absolute-maximum limit (VDD + 0.3 V).

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "esp-swd"
+version = "0.5.0"
+description = "Host library, CLI and daemon (TTY bridge) for the esp-swd dual SWD flasher and UART bridge"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = ["pyserial>=3.5"]
+
+[project.optional-dependencies]
+update = ["esptool>=4.7"]
+
+[project.scripts]
+esw = "esw.cli:main"
+
+[tool.setuptools]
+packages = ["esw"]

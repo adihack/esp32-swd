@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""esp-swd host client over a serial transport (r5 test firmware: USB-Serial-JTAG CDC).
+"""esp-swd host client. The link is the board's USB-Serial-JTAG port, or the socket of a running `esw serve` daemon
+that owns the port (see link.py): Esw() picks the daemon when one serves the board, so scripts work either way.
 
 A reader thread owns the receive side: it matches responses to requests by sequence number and collects UART RX
 events per channel, so requests may come from several threads and UART data arrives while a request is running.
@@ -11,15 +12,18 @@ import threading
 import time
 import zlib
 
-import serial
-
+from . import image as img
+from . import link
 from . import proto as P
 
 
 class EswError(Exception):
     def __init__(self, cmd, status, data=b""):
         self.cmd, self.status, self.data = cmd, status, data
-        super().__init__("cmd 0x%02X failed: %s (%d)" % (cmd, P.ERRORS.get(status, "?"), status))
+        why = ""
+        if data and all(32 <= b < 127 for b in data):
+            why = ": " + data.decode()   # the daemon and the client explain some refusals in words
+        super().__init__("cmd 0x%02X failed: %s (%d)%s" % (cmd, P.ERRORS.get(status, "?"), status, why))
 
 
 class Esw:
@@ -27,8 +31,11 @@ class Esw:
     UART_CHUNK = 2048       # data bytes per UART_WRITE frame
     UART_BUF_MAX = 64 << 20   # per channel, if nobody reads: oldest data is dropped beyond this
 
-    def __init__(self, port="/dev/ttyACM0", timeout=10.0, keepalive=1.0):
-        self.ser = serial.Serial(port, 115200, timeout=0.05)
+    def __init__(self, port=None, timeout=10.0, keepalive=1.0):
+        """port: None (the only board attached), a device path, a board id (USB serial without colons) or
+        "unix:<socket>". A daemon serving the board is used when one runs."""
+        self.ser = link.open_link(port)
+        self.port = self.ser.port
         self.timeout = timeout
         self.keepalive = keepalive
         self.seq = 0
@@ -81,7 +88,10 @@ class Esw:
     CH_BUDGET = P.CH_QUEUE * 2310   # CH_QUEUE full frames (2 KB data + header + COBS + CRC + delimiter)
 
     def _budget(self, cmd, data):
-        if self.proto >= 4 and data and data[0] < 2 and (cmd in (P.CH_HOLD, P.CH_RELEASE) or 0x20 <= cmd <= 0x2F):
+        if cmd == P.CH_MODE and len(data) > 1 and data[1] == P.GROUP_UART:
+            return "dev", self.RX_BUDGET   # the board runs UART modes on its dispatcher
+        if self.proto >= 4 and data and data[0] < 2 and (cmd in (P.CH_HOLD, P.CH_RELEASE, P.CH_MODE) or
+                                                          0x20 <= cmd <= 0x2F):
             return data[0], self.CH_BUDGET
         return "dev", self.RX_BUDGET
 
@@ -223,7 +233,8 @@ class Esw:
         d = self.request(P.INFO)
         proto, up, rr, heap = struct.unpack_from("<IIII", d)
         return dict(proto=proto, uptime_ms=up, reset_reason=rr, free_heap=heap,
-                    fw=d[16:48].split(b"\x00")[0].decode())
+                    fw=d[16:48].split(b"\x00")[0].decode(),
+                    boot_id=struct.unpack_from("<I", d, 48)[0] if len(d) >= 52 else None)
 
     def reboot(self, rom_download=False):
         self.request(P.REBOOT, bytes([1 if rom_download else 0]))
@@ -236,10 +247,32 @@ class Esw:
         self.request(P.CH_RELEASE, bytes([ch, group]))
 
     def state(self, ch):
+        """Switch groups of a channel. vtref_mv is measured only while some group wants to close (None otherwise);
+        swd/uart: OPEN, WAIT_VTREF (wants to close, DUT not powered) or CLOSED; mode_*: the host's standing order
+        (auto/on/off, see mode()); uart_open/uart_routed/uart_loop: the UART stream; attached: an SWD session."""
         d = self.request(P.CH_STATE, bytes([ch]))
         mv, vt_closed, swd, uart, vt_valid, h_swd, h_uart = struct.unpack_from("<iBBBBII", d)
-        return dict(vtref_mv=mv if vt_valid else None, vtref_closed=bool(vt_closed), swd=P.GSTATE[swd],
-                    uart=P.GSTATE[uart], holders_swd=h_swd, holders_uart=h_uart)
+        st = dict(vtref_mv=mv if vt_valid else None, vtref_closed=bool(vt_closed), swd=P.GSTATE[swd],
+                  uart=P.GSTATE[uart], holders_swd=h_swd, holders_uart=h_uart)
+        if len(d) >= 20:
+            m_swd, m_uart, u, att = struct.unpack_from("<BBBB", d, 16)
+            st.update(mode_swd=P.MODE_NAME.get(m_swd, m_swd), mode_uart=P.MODE_NAME.get(m_uart, m_uart),
+                      uart_open=bool(u & 1), uart_routed=bool(u & 2), uart_loop=bool(u & 4), attached=bool(att))
+        return st
+
+    def mode(self, ch, group, mode):
+        """Standing order for a switch group (group "swd"/"uart" or P.GROUP_*):
+        auto: closed while something uses it (SWD session or job, UART stream); the default after every boot;
+        on:   closed whenever the DUT is powered, used or not (ends with host loss, like every host hold);
+        off:  never closed (attach and UART writes fail with the interlock error); stays until changed or reboot.
+        VTref must be valid to close in every mode. "off" on SWD ends a session first (debug off, pin reset)."""
+        g = P.GROUPS[group] if isinstance(group, str) else group
+        self.request(P.CH_MODE, bytes([ch, g, P.MODES[mode]]))
+
+    def isolate(self, ch):
+        """Both signal groups of the channel off: nothing on this channel reaches the DUT until set back."""
+        for g in ("swd", "uart"):
+            self.mode(ch, g, "off")
 
     def wait_group(self, ch, group, want="CLOSED", timeout=2.0):
         key = {P.GROUP_SWD: "swd", P.GROUP_UART: "uart"}[group]
@@ -261,7 +294,7 @@ class Esw:
         return self._target_info(P.SWD_ATTACH, ch, st, d)
 
     def _target_info(self, cmd, ch, st, d):
-        if len(d) < 40:   # argument errors come back without a body
+        if len(d) < 40 or len(d) < 40 + 16 * d[5]:   # argument errors and refusals carry no target info
             raise EswError(cmd, st, d)
         dpidr, locked, nreg, khz = struct.unpack_from("<IBBH", d)
         part = d[8:40].split(b"\x00")[0].decode()
@@ -277,6 +310,63 @@ class Esw:
 
     def detach(self, ch):
         self.request(P.SWD_DETACH, bytes([ch]))
+
+    def connect(self, ch, clock=8000000, core=0, raw=False, timeout=2.0):
+        """Hold the SWD group, wait for the interlock to close it (DUT powered), attach. -> attach info.
+        Pair with disconnect(), or use session()."""
+        self.hold(ch, P.GROUP_SWD)
+        st = self.wait_group(ch, P.GROUP_SWD, "CLOSED", timeout)
+        if st["swd"] != "CLOSED":
+            self.release(ch, P.GROUP_SWD)
+            why = ("switch mode is off" if st.get("mode_swd") == "off" else
+                   "DUT unpowered (VTref %s mV), or the cable is rotated (pin 1 on the DUT's nRESET reads about "
+                   "2.7 V)" % st["vtref_mv"])
+            raise EswError(P.SWD_ATTACH, P.ERR_INTERLOCK, why.encode())
+        try:
+            return self.attach(ch, clock, 1, core=core, raw=raw)
+        except Exception:
+            self.release(ch, P.GROUP_SWD)
+            raise
+
+    def disconnect(self, ch):
+        """End the session (debug off, pin reset: the target runs) and let the switches open."""
+        try:
+            self.detach(ch)
+        finally:
+            self.release(ch, P.GROUP_SWD)
+
+    def flash_file(self, ch, path, core=0, addr=None, clock=8000000, allow_erase=False, log=None):
+        """Flash a .hex or .bin (at addr, default start of flash) into the target on channel ch and verify it by
+        on-target CRC; connect .. disconnect around it. Only the pages the image touches are erased.
+        -> dict(part, bytes, data, seconds). log: optional callable(str) for progress lines."""
+        log = log or (lambda s: None)
+        t0 = time.monotonic()
+        info = self.connect(ch, clock, core)
+        try:
+            log("%s on channel %s core %d (%d kHz)%s" % (info["part"], "AB"[ch], core, info["khz"],
+                                                       ", LOCKED" if info["locked"] else ""))
+            if info["locked"]:
+                if not allow_erase:
+                    raise EswError(P.SWD_ATTACH, P.ERR_LOCKED, b"target is protected: allow_erase mass-erases it")
+                info = self.unlock(ch, allow_erase=True)   # no re-attach: that would reset the part
+                log("unlocked by mass erase: %s" % info["part"])
+            mem = img.load(path, info["regions"], addr)
+            if not mem:
+                raise ValueError("%s: image is empty" % path)
+            runs = img.page_runs(mem, info["regions"])
+            for start, buf in runs:
+                t1 = time.monotonic()
+                self.flash(ch, start, buf)
+                log("  0x%08X %8d bytes %6.2f s  crc32 %08X ok" % (start, len(buf), time.monotonic() - t1,
+                                                                     zlib.crc32(buf)))
+        finally:
+            self.disconnect(ch)
+        return dict(part=info["part"], bytes=sum(len(b) for _, b in runs), data=img.size(mem),
+                    seconds=time.monotonic() - t0)
+
+    def daemon(self, op, data=b""):
+        """Request to the `esw serve` daemon itself (only over its socket). -> response body."""
+        return self.request(P.DAEMON, bytes([op]) + data)
 
     def unlock(self, ch, allow_erase=False):
         """Regain access to a protected part (allow_erase: by mass erase). Returns the attach info as it is now; do
@@ -407,15 +497,17 @@ class Esw:
             self.verify(ch, addr, image)
 
     # ---- DUT UART ------------------------------------------------------------------------------------------
-    def uart_open(self, ch, baud=115200, parity="N", stopbits=1, rx_filter=True, tx_strong=False, dma=True):
+    def uart_open(self, ch, baud=115200, parity="N", stopbits=1, rx_filter=True, tx_strong=False, dma=True,
+                  loopback=False):
         """Configure the DUT UART and start streaming RX. The firmware holds the UART group: its switches close as
         soon as VTref is valid (wait_group(ch, GROUP_UART) to know). Calling it again changes the settings.
         rx_filter: ignore RX pulses shorter than 1/8 bit (crosstalk from our own TX edges); tx_strong: full TX drive
         strength instead of the weakest; dma: may take the single DMA engine if it is free (open the faster channel
-        first). Returns the actual baud rate; uart_backend[ch] tells "dma" or "irq"."""
+        first). loopback: self-test, TX looped to RX inside the board's UART; the DUT pads are not used and the
+        switches stay as they are. Returns the actual baud rate; uart_backend[ch] tells "dma" or "irq"."""
         flags = (P.UART_PARITY[parity] | (P.UART_STOP2 if stopbits == 2 else 0) |
                  (0 if rx_filter else P.UART_RX_NOFILT) | (P.UART_TX_STRONG if tx_strong else 0) |
-                 (0 if dma else P.UART_NO_DMA))
+                 (0 if dma else P.UART_NO_DMA) | (P.UART_LOOPBACK if loopback else 0))
         d = self.request(P.UART_OPEN, struct.pack("<BII", ch, int(baud), flags))
         self.uart_backend[ch] = P.UART_BACKEND.get(d[4], "?") if len(d) > 4 else "irq"
         return struct.unpack_from("<I", d)[0]

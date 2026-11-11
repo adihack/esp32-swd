@@ -37,7 +37,7 @@ def timed(fn, *a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", default="/dev/ttyACM0")
+    ap.add_argument("--port", help="device, board id or unix:<socket>; default: the only board (through esw serve if it runs)")
     ap.add_argument("--channel", default="A", choices="AB")
     ap.add_argument("--allow-erase", action="store_true", help="permit a mass erase if the chip is locked")
     ap.add_argument("--phy", type=int, default=1, choices=(0, 1), help="1 dedicated GPIO (default), 0 bit-bang")

@@ -37,3 +37,6 @@ hardware/**/3dmodels/
 # Per-user KiCad view state and editor workspaces
 *.kicad_prl
 *.code-workspace
+
+# pip install -e host/python
+*.egg-info/

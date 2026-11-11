@@ -2,11 +2,11 @@
 """esp-swd wire protocol: COBS + CRC-16/CCITT-FALSE framing, command numbers (mirrors lib/include/esw/proto.h)."""
 import binascii
 
-PROTO_VERSION = 4
+PROTO_VERSION = 5
 CH_QUEUE = 4   # proto >= 4: channel request frames in flight per channel (the board's per-channel queue)
 
 PING, INFO, REBOOT = 0x01, 0x02, 0x03
-CH_HOLD, CH_RELEASE, CH_STATE = 0x10, 0x11, 0x12
+CH_HOLD, CH_RELEASE, CH_STATE, CH_MODE = 0x10, 0x11, 0x12, 0x13
 SWD_ATTACH, SWD_DETACH, TGT_UNLOCK, TGT_RESET = 0x20, 0x21, 0x22, 0x23
 MEM_READ, MEM_WRITE, TGT_ERASE, TGT_PROGRAM, TGT_VERIFY, SWD_STATS = 0x24, 0x25, 0x26, 0x27, 0x28, 0x29
 SWD_BENCH, TGT_CRC32, DAP_RAW = 0x2A, 0x2B, 0x2C
@@ -15,12 +15,15 @@ EVT_UART_RX = 0xE0                       # events: seq 0, cmd 0xE0..0xEF, status
 EVT_FIRST, EVT_LAST = 0xE0, 0xEF
 UART_PARITY = {"N": 0, "E": 1, "O": 2}   # UART_OPEN flags bits 0-1; bit 2: two stop bits
 UART_STOP2 = 1 << 2
-UART_RX_NOFILT, UART_TX_STRONG, UART_NO_DMA = 1 << 3, 1 << 4, 1 << 5
+UART_RX_NOFILT, UART_TX_STRONG, UART_NO_DMA, UART_LOOPBACK = 1 << 3, 1 << 4, 1 << 5, 1 << 6
 UART_BACKEND = {0: "off", 1: "irq", 2: "dma"}
 UART_RX_LOST, UART_RX_ERROR, UART_RX_BREAK = 1 << 0, 1 << 1, 1 << 2
 CRC_RESET_HALT = 1 << 0
 
 GROUP_VTREF, GROUP_SWD, GROUP_UART = 0, 1, 2
+GROUPS = {"swd": GROUP_SWD, "uart": GROUP_UART}
+MODES = {"auto": 0, "on": 1, "off": 2}   # CH_MODE: closed while used / whenever the DUT is powered / never
+MODE_NAME = {v: k for k, v in MODES.items()}
 GSTATE = {0: "OPEN", 1: "WAIT_VTREF", 2: "CLOSED"}
 MEM_KIND = {0: "flash", 1: "ram", 2: "otp", 3: "ext"}
 
@@ -30,7 +33,8 @@ ERRORS = {
     -8: "debug access locked", -9: "verify mismatch", -10: "invalid state", -11: "unsupported",
     -12: "not found", -13: "loader error", -14: "isolation interlock",
 }
-ERR_LOCKED, ERR_NOT_FOUND, ERR_INTERLOCK = -8, -12, -14
+ERR_STATE, ERR_LOCKED, ERR_NOT_FOUND, ERR_INTERLOCK = -10, -8, -12, -14
+DAEMON = 0x70   # handled by the host daemon (esw serve), never sent to the board
 
 UNLOCK_ALLOW_ERASE = 1 << 0
 RESET_HALT = 1 << 0

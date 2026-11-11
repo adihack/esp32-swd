@@ -32,7 +32,7 @@ A, B = 0, 1
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", default="/dev/ttyACM0")
+    ap.add_argument("--port", help="device, board id or unix:<socket>; default: the only board (through esw serve if it runs)")
     ap.add_argument("--duration", type=float, default=60)
     ap.add_argument("--baud-a", type=int, default=1000000, help="nRF52840: 1000000 at most")
     ap.add_argument("--baud-b", type=int, default=3000000)
